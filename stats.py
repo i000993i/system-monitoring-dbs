@@ -162,7 +162,7 @@ def insert_line(text: str, tag: str = "good", target="info"):
     try:
         widget = {"info": info_text, "proc": proc_text, "net": net_text, "log": log_text}[target]
         widget.insert("end", text + "\n", tag)
-    except KeyError as e:
+    except KeyError:
         safe_print(f"Ошибка insert_line: неверный target '{target}'")
     except Exception as e:
         safe_print(f"Ошибка insert_line: {str(e)}")
@@ -316,7 +316,7 @@ def collect_system_info():
                     usage = psutil.disk_usage(partition.mountpoint)
                     insert_line(f"{partition.device} ({partition.fstype}) -> {partition.mountpoint}")
                     insert_line(f"  Всего: {get_size(usage.total)} | Свободно: {get_size(usage.free)} ({usage.percent:.1f}% занято)")
-                except PermissionError as e:
+                except PermissionError:
                     insert_line(f"  ⚠️ Нет доступа к {partition.mountpoint}", "warn")
                 except Exception as e:
                     insert_line(f"  Ошибка чтения {partition.mountpoint}: {str(e)}", "warn")
@@ -398,7 +398,7 @@ def collect_processes():
                         'ram': p.info['memory_info'].rss / 1024 / 1024 if p.info['memory_info'] else 0,
                         'user': p.info['username'][:12] if p.info['username'] else 'SYSTEM'
                     })
-                except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
                 except Exception as e:
                     safe_print(f"Ошибка процесса {p.info.get('pid', 'N/A')}: {str(e)}")
@@ -756,7 +756,7 @@ def update_overlay():
         try:
             disk = psutil.disk_usage('/' if platform.system() != 'Windows' else 'C:\\')
             disk_usage = disk.percent
-        except Exception as e:
+        except Exception:
             disk_usage = None
 
         current_minimized_text = f"FPS:{fps:3d} | CPU:{cpu:4.1f}% | RAM:{ram_p:4.1f}%"
