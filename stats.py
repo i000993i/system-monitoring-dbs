@@ -2,9 +2,10 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk, filedialog
 import platform
-import psutil
 import datetime
 import os
+import wmi
+import psutil
 from collections import deque
 import sys
 import io
@@ -19,8 +20,8 @@ def safe_print(message):
             log_text.see("end")
         else:
             print(message)
-    except:
-        print(message)
+    except Exception as e:
+        print(f'{str(e)}')
 
 # === Перехват вывода ===
 class TextRedirect(io.StringIO):
@@ -38,7 +39,6 @@ class TextRedirect(io.StringIO):
 # === WMI (только Windows) ===
 wmi_available = False
 try:
-    import wmi
     c = wmi.WMI()
     wmi_available = True
 except Exception as e:
@@ -154,7 +154,8 @@ def save_report():
         filetypes=[("Текст", "*.txt"), ("Все", "*.*")],
         title="Сохранить отчёт"
     )
-    if not file_path: return
+    if not file_path:
+        return None 
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write("📋 ОТЧЁТ О СИСТЕМЕ\n")
@@ -210,14 +211,16 @@ def collect_system_info():
             base = c.Win32_BaseBoard()[0]
             insert_line(f"Производитель: {base.Manufacturer}")
             insert_line(f"Модель: {base.Product}")
-        except: insert_line("❌ Не получено", "warn")
+        except Exception: 
+            insert_line("❌ Не получено", "warn")
 
         header("💾 BIOS")
         try:
             bios = c.Win32_BIOS()[0]
             insert_line(f"Производитель: {bios.Manufacturer}")
             insert_line(f"Версия: {bios.SMBIOSBIOSVersion}")
-        except: insert_line("❌ Не получено", "warn")
+        except Exception: 
+            insert_line("❌ Не получено", "warn")
 
         header("🎮 ВИДЕОКАРТА")
         try:
@@ -226,7 +229,8 @@ def collect_system_info():
                 if hasattr(gpu, 'AdapterRAM'):
                     ram_mb = int(gpu.AdapterRAM) / 1024 / 1024
                     insert_line(f"Память: {ram_mb:.0f} МБ")
-        except: insert_line("❌ Не получено", "warn")
+        except Exception:
+            insert_line("❌ Не получено", "warn")
     else:
         insert_line("🔧 WMI недоступен — нет данных о плате/GPU", "warn")
     safe_print("✅ Информация собрана")
@@ -270,7 +274,7 @@ def collect_network_connections():
             proto = "TCP" if conn.type == 1 else "UDP"
             try:
                 proc_name = psutil.Process(conn.pid).name() if conn.pid else "Система"
-            except:
+            except Exception:
                 proc_name = "Неизв."
             insert_line(f"{proto:6} | {laddr[:15]:<15} | {raddr[:15]:<15} | {state:4} | {proc_name[:12]}", "good", "net")
     except Exception as e:
@@ -335,7 +339,7 @@ default_config = {"x": 50, "y": 50, "width": 240, "height": 110}
 
 try:
     overlay_config = json.load(open(config_file)) if os.path.exists(config_file) else default_config
-except:
+except Exception:
     overlay_config = default_config
 
 # === Оверлей: НЕ закрывается крестиком, только F8 ===
@@ -383,7 +387,8 @@ def save_pos(e):
         overlay_config.update({"x": int(pos[1]), "y": int(pos[2])})
         with open(config_file, "w") as f:
             json.dump(overlay_config, f)
-    except: pass
+    except Exception as e:
+        return f"{str(e)}"
 
 overlay_label.bind("<Button-1>", lambda e: [setattr(overlay, '_x', e.x), setattr(overlay, '_y', e.y)])
 overlay_label.bind("<B1-Motion>", lambda e: overlay.geometry(f'+{e.x_root - overlay._x}+{e.y_root - overlay._y}'))
@@ -424,7 +429,8 @@ def update_overlay():
                 temp = max(t.current for t in temps["coretemp"])
             elif "cpu_thermal" in temps:
                 temp = temps["cpu_thermal"][0].current
-    except: pass
+    except Exception as e:
+        return f"{str(e)}"
 
     color = "#ff3333" if isinstance(temp, (int, float)) and temp > 80 else \
             "#ffaa00" if isinstance(temp, (int, float)) and temp > 65 else "#00ff88"
@@ -454,3 +460,4 @@ root.after(100, update_overlay)
 
 safe_print("🟢 Приложение готово. F8 — показать/скрыть оверлей.")
 root.mainloop()
+
