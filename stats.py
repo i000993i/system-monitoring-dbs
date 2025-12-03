@@ -15,13 +15,13 @@ import time
 # === Глобальный логгер ===
 def safe_print(message):
     try:
-        if 'log_text' in globals() and 'insert' in dir(log_text):
+        if 'log_text' in globals() and hasattr(log_text, 'insert'):
             log_text.insert("end", message + "\n", "log")
             log_text.see("end")
         else:
             print(message)
     except Exception as e:
-        print(f'{str(e)}')
+        print(f"Ошибка safe_print: {str(e)}")
 
 # === Перехват вывода ===
 class TextRedirect(io.StringIO):
@@ -30,27 +30,44 @@ class TextRedirect(io.StringIO):
         self.text_widget = text_widget
 
     def write(self, s):
-        self.text_widget.insert("end", s, "error" if "Traceback" in s or "Error" in s else "log")
-        self.text_widget.see("end")
+        try:
+            if s.strip():
+                tag = "error" if "Traceback" in s or "Error" in s else "log"
+                self.text_widget.insert("end", s, tag)
+                self.text_widget.see("end")
+        except Exception as e:
+            print(f"Ошибка TextRedirect: {str(e)}")
 
     def flush(self):
         pass
 
 # === WMI (только Windows) ===
 wmi_available = False
-try:
-    c = wmi.WMI()
-    wmi_available = True
-except Exception as e:
-    safe_print(f"⚠️ WMI недоступен: {e}")
+wmi_module = None
+
+if platform.system() == "Windows":
+    try:
+        import wmi
+        wmi_module = wmi.WMI()
+        wmi_available = True
+        safe_print("✅ WMI подключен")
+    except ImportError as e:
+        safe_print(f"⚠️ WMI не установлен: {str(e)}")
+    except Exception as e:
+        safe_print(f"⚠️ Ошибка WMI: {str(e)}")
+else:
+    safe_print("ℹ️ WMI доступен только для Windows")
 
 # === Функция перевода байтов ===
 def get_size(bytes_value: float) -> str:
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if bytes_value < 1024.0:
-            return f"{bytes_value:.2f} {unit}"
-        bytes_value /= 1024.0
-    return f"{bytes_value:.2f} PB"
+    try:
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_value < 1024.0:
+                return f"{bytes_value:.2f} {unit}"
+            bytes_value /= 1024.0
+        return f"{bytes_value:.2f} PB"
+    except Exception as e:
+        return f"Ошибка: {str(e)}"
 
 # === Настройка окна ===
 root = tk.Tk()
@@ -79,14 +96,18 @@ style.map("TNotebook.Tab",
 
 # === Цветовые теги ===
 def add_tags(text_widget):
-    text_widget.tag_config("good", foreground="#00ff88")
-    text_widget.tag_config("warn", foreground="#ffaa00")
-    text_widget.tag_config("crit", foreground="#ff5555")
-    text_widget.tag_config("header", foreground="#00aaff", font=("Consolas", 12, "bold"))
-    text_widget.tag_config("high", foreground="#ff3333")
-    text_widget.tag_config("med", foreground="#ffcc00")
-    text_widget.tag_config("low", foreground="#00ccff")
-    text_widget.tag_config("log", foreground="#cccccc")
+    try:
+        text_widget.tag_config("good", foreground="#00ff88")
+        text_widget.tag_config("warn", foreground="#ffaa00")
+        text_widget.tag_config("crit", foreground="#ff5555")
+        text_widget.tag_config("header", foreground="#00aaff", font=("Consolas", 12, "bold"))
+        text_widget.tag_config("high", foreground="#ff3333")
+        text_widget.tag_config("med", foreground="#ffcc00")
+        text_widget.tag_config("low", foreground="#00ccff")
+        text_widget.tag_config("log", foreground="#cccccc")
+        text_widget.tag_config("error", foreground="#ff5555")
+    except Exception as e:
+        safe_print(f"Ошибка add_tags: {str(e)}")
 
 # === Вкладки ===
 info_frame = tk.Frame(notebook, bg="#0a0a0a")
@@ -134,153 +155,402 @@ sys.stdout = TextRedirect(log_text)
 sys.stderr = TextRedirect(log_text)
 safe_print("✅ Приложение запущено")
 safe_print(f"ОС: {platform.system()} | Python: {platform.python_version()}")
+safe_print(f"Используется psutil v{psutil.__version__}")
 
 # === Функции вывода ===
 def insert_line(text: str, tag: str = "good", target="info"):
-    widget = {"info": info_text, "proc": proc_text, "net": net_text, "log": log_text}[target]
-    widget.insert("end", text + "\n", tag)
+    try:
+        widget = {"info": info_text, "proc": proc_text, "net": net_text, "log": log_text}[target]
+        widget.insert("end", text + "\n", tag)
+    except KeyError as e:
+        safe_print(f"Ошибка insert_line: неверный target '{target}'")
+    except Exception as e:
+        safe_print(f"Ошибка insert_line: {str(e)}")
 
 def header(title: str, target="info"):
-    sep = "─" * 60
-    insert_line(f"┌{sep}┐", "header", target)
-    insert_line(f"{title:^62}", "header", target)
-    insert_line(f"└{sep}┘", "header", target)
-    insert_line("", target)
+    try:
+        sep = "─" * 60
+        insert_line(f"┌{sep}┐", "header", target)
+        insert_line(f"{title:^62}", "header", target)
+        insert_line(f"└{sep}┘", "header", target)
+        insert_line("", target)
+    except Exception as e:
+        safe_print(f"Ошибка header: {str(e)}")
 
 # === Кнопка "Сохранить отчёт" ===
 def save_report():
     file_path = filedialog.asksaveasfilename(
         defaultextension=".txt",
-        filetypes=[("Текст", "*.txt"), ("Все", "*.*")],
+        filetypes=[("Текст", "*.txt"), ("JSON", "*.json"), ("Все", "*.*")],
         title="Сохранить отчёт"
     )
+    
     if not file_path:
-        return None 
+        safe_print("❌ Сохранение отменено пользователем")
+        return False
+    
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write("📋 ОТЧЁТ О СИСТЕМЕ\n")
-            f.write(f"Дата: {datetime.datetime.now()}\n\n")
+            f.write(f"Дата: {datetime.datetime.now()}\n")
+            f.write(f"Система: {platform.system()} {platform.version()}\n\n")
+            
             sections = {"Информация": info_text, "Процессы": proc_text, "Сеть": net_text}
             for name, widget in sections.items():
                 f.write(f"=== {name} ===\n")
-                f.write(widget.get("1.0", "end-1c") + "\n\n")
+                content = widget.get("1.0", "end-1c")
+                if content.strip():
+                    f.write(content + "\n\n")
+                else:
+                    f.write("(нет данных)\n\n")
+        
         safe_print(f"✅ Отчёт сохранён: {file_path}")
+        return True
+    except PermissionError as e:
+        safe_print(f"❌ Ошибка доступа к файлу: {str(e)}")
+        return False
+    except OSError as e:
+        safe_print(f"❌ Ошибка файловой системы: {str(e)}")
+        return False
     except Exception as e:
-        safe_print(f"❌ Ошибка: {e}")
+        safe_print(f"❌ Ошибка сохранения: {str(e)}")
+        return False
 
 btn_save = tk.Button(root, text="💾 Отчёт", font=("Arial", 10), bg="#0088cc", fg="white", command=save_report)
 btn_save.pack(pady=4)
 
-# === Сбор данных ===
+# === Сбор данных с использованием psutil ===
 def collect_system_info():
-    info_text.config(state="normal")
-    info_text.delete("1.0", "end")
-    safe_print("🔄 Сбор данных: Инфо...")
-    # ... (вся ваша логика остаётся без изменений) ...
-    header("🌐 ОПЕРАЦИОННАЯ СИСТЕМА")
-    insert_line(f"Система: {platform.system()}")
-    insert_line(f"Версия: {platform.version()}")
-    insert_line(f"Архитектура: {platform.architecture()[0]}")
-    insert_line(f"Имя ПК: {platform.node()}")
-    insert_line("")
-    header("⚙️ ПРОЦЕССОР")
-    insert_line(f"Модель: {platform.processor() or 'Неизвестно'}")
-    insert_line(f"Ядер: {psutil.cpu_count(logical=False)} | Потоков: {psutil.cpu_count(logical=True)}")
-    if psutil.cpu_freq():
-        insert_line(f"Частота: {psutil.cpu_freq().max:.0f} МГц")
-    insert_line("")
-    header("🧠 RAM")
-    vm = psutil.virtual_memory()
-    insert_line(f"Объём: {get_size(vm.total)}")
-    insert_line(f"Используется: {get_size(vm.used)} ({vm.percent:.1f}%)", "good" if vm.percent < 80 else "warn")
-    if wmi_available:
+    try:
+        info_text.config(state="normal")
+        info_text.delete("1.0", "end")
+        safe_print("🔄 Сбор данных: Инфо...")
+        
+        header("🌐 ОПЕРАЦИОННАЯ СИСТЕМА")
+        insert_line(f"Система: {platform.system()}")
+        insert_line(f"Версия: {platform.version()}")
         try:
-            mems = c.Win32_PhysicalMemory()
-            insert_line(f"Модулей RAM: {len(mems)}")
-            for i, mem in enumerate(mems):
-                cap = get_size(int(mem.Capacity))
-                speed = f"{mem.ConfiguredClockSpeed} МГц" if hasattr(mem, 'ConfiguredClockSpeed') else "—"
-                insert_line(f"  Модуль {i+1}: {cap} | {speed}")
+            insert_line(f"Архитектура: {platform.architecture()[0]}")
         except Exception as e:
-            insert_line(f"  ⚠️ Ошибка RAM: {e}", "warn")
-    insert_line("")
-    # Материнская плата, BIOS, GPU — аналогично, кратко
-    if wmi_available:
-        header("🔌 МАТЕРИНСКАЯ ПЛАТА")
+            insert_line(f"Архитектура: ошибка ({str(e)})")
+        insert_line(f"Имя ПК: {platform.node()}")
+        
         try:
-            base = c.Win32_BaseBoard()[0]
-            insert_line(f"Производитель: {base.Manufacturer}")
-            insert_line(f"Модель: {base.Product}")
-        except Exception: 
-            insert_line("❌ Не получено", "warn")
+            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time()).strftime('%Y-%m-%d %H:%M:%S')
+            insert_line(f"Время загрузки: {boot_time}")
+        except Exception as e:
+            insert_line(f"Время загрузки: ошибка ({str(e)})")
+        
+        insert_line("")
+        
+        header("⚙️ ПРОЦЕССОР")
+        try:
+            cpu_brand = platform.processor() or 'Неизвестно'
+            insert_line(f"Модель: {cpu_brand}")
+        except Exception as e:
+            insert_line(f"Модель: ошибка ({str(e)})")
+        
+        try:
+            cores_physical = psutil.cpu_count(logical=False)
+            cores_logical = psutil.cpu_count(logical=True)
+            insert_line(f"Ядер: {cores_physical} | Потоков: {cores_logical}")
+        except Exception as e:
+            insert_line(f"Ядра/потоки: ошибка ({str(e)})")
+        
+        try:
+            cpu_freq = psutil.cpu_freq()
+            if cpu_freq:
+                insert_line(f"Текущая частота: {cpu_freq.current:.0f} МГц")
+                insert_line(f"Максимальная частота: {cpu_freq.max:.0f} МГц")
+        except Exception as e:
+            insert_line(f"Частота CPU: ошибка ({str(e)})")
+        
+        try:
+            cpu_usage = psutil.cpu_percent(interval=0.1)
+            insert_line(f"Загрузка CPU: {cpu_usage:.1f}%")
+        except Exception as e:
+            insert_line(f"Загрузка CPU: ошибка ({str(e)})")
+        
+        insert_line("")
+        
+        header("🧠 RAM")
+        try:
+            vm = psutil.virtual_memory()
+            insert_line(f"Объём RAM: {get_size(vm.total)}")
+            
+            ram_percent = vm.percent
+            tag = "good" if ram_percent < 70 else "warn" if ram_percent < 90 else "crit"
+            insert_line(f"Используется: {get_size(vm.used)} ({ram_percent:.1f}%)", tag)
+            insert_line(f"Доступно: {get_size(vm.available)}")
+        except Exception as e:
+            insert_line(f"Ошибка RAM: {str(e)}", "crit")
+        
+        try:
+            swap = psutil.swap_memory()
+            if swap.total > 0:
+                insert_line(f"Swap: {get_size(swap.total)} | Используется: {get_size(swap.used)} ({swap.percent:.1f}%)")
+        except Exception as e:
+            insert_line(f"Ошибка Swap: {str(e)}", "warn")
+        
+        if wmi_available and wmi_module:
+            try:
+                mems = wmi_module.Win32_PhysicalMemory()
+                insert_line(f"Модулей RAM: {len(mems)}")
+                for i, mem in enumerate(mems):
+                    try:
+                        cap = get_size(int(mem.Capacity))
+                        speed = f"{mem.ConfiguredClockSpeed} МГц" if hasattr(mem, 'ConfiguredClockSpeed') else "—"
+                        insert_line(f"  Модуль {i+1}: {cap} | {speed}")
+                    except Exception as e:
+                        insert_line(f"  ⚠️ Ошибка модуля {i+1}: {str(e)}", "warn")
+            except Exception as e:
+                insert_line(f"  ⚠️ Ошибка RAM через WMI: {str(e)}", "warn")
+        
+        insert_line("")
+        
+        header("💾 ДИСКИ")
+        try:
+            partitions = psutil.disk_partitions()
+            for partition in partitions:
+                try:
+                    usage = psutil.disk_usage(partition.mountpoint)
+                    insert_line(f"{partition.device} ({partition.fstype}) -> {partition.mountpoint}")
+                    insert_line(f"  Всего: {get_size(usage.total)} | Свободно: {get_size(usage.free)} ({usage.percent:.1f}% занято)")
+                except PermissionError as e:
+                    insert_line(f"  ⚠️ Нет доступа к {partition.mountpoint}", "warn")
+                except Exception as e:
+                    insert_line(f"  Ошибка чтения {partition.mountpoint}: {str(e)}", "warn")
+        except Exception as e:
+            insert_line(f"Ошибка чтения дисков: {str(e)}", "warn")
+        
+        insert_line("")
+        
+        # Материнская плата, BIOS, GPU — через WMI
+        if wmi_available and wmi_module:
+            try:
+                header("🔌 МАТЕРИНСКАЯ ПЛАТА")
+                baseboards = wmi_module.Win32_BaseBoard()
+                if baseboards:
+                    base = baseboards[0]
+                    insert_line(f"Производитель: {base.Manufacturer or 'Неизвестно'}")
+                    insert_line(f"Модель: {base.Product or 'Неизвестно'}")
+                    insert_line(f"Серийный номер: {base.SerialNumber or 'Неизвестно'}")
+            except Exception as e:
+                insert_line(f"Ошибка получения данных о материнской плате: {str(e)}", "warn")
 
-        header("💾 BIOS")
-        try:
-            bios = c.Win32_BIOS()[0]
-            insert_line(f"Производитель: {bios.Manufacturer}")
-            insert_line(f"Версия: {bios.SMBIOSBIOSVersion}")
-        except Exception: 
-            insert_line("❌ Не получено", "warn")
+            try:
+                header("💾 BIOS")
+                bioses = wmi_module.Win32_BIOS()
+                if bioses:
+                    bios = bioses[0]
+                    insert_line(f"Производитель: {bios.Manufacturer or 'Неизвестно'}")
+                    insert_line(f"Версия: {bios.SMBIOSBIOSVersion or 'Неизвестно'}")
+                    insert_line(f"Дата: {bios.ReleaseDate or 'Неизвестно'}")
+            except Exception as e:
+                insert_line(f"Ошибка получения данных о BIOS: {str(e)}", "warn")
 
-        header("🎮 ВИДЕОКАРТА")
+            try:
+                header("🎮 ВИДЕОКАРТА")
+                gpus = wmi_module.Win32_VideoController()
+                for i, gpu in enumerate(gpus):
+                    insert_line(f"GPU {i+1}: {gpu.Name or 'Неизвестно'}")
+                    if hasattr(gpu, 'AdapterRAM') and gpu.AdapterRAM:
+                        try:
+                            ram_mb = int(gpu.AdapterRAM) / 1024 / 1024
+                            insert_line(f"  Память: {ram_mb:.0f} МБ")
+                        except Exception as e:
+                            insert_line(f"  Ошибка памяти GPU: {str(e)}")
+                    if hasattr(gpu, 'DriverVersion'):
+                        insert_line(f"  Драйвер: {gpu.DriverVersion}")
+            except Exception as e:
+                insert_line(f"Ошибка получения данных о GPU: {str(e)}", "warn")
+        else:
+            insert_line("🔧 WMI недоступен — нет данных о плате/GPU", "warn")
+        
+        safe_print("✅ Информация о системе собрана")
+    
+    except Exception as e:
+        safe_print(f"❌ Критическая ошибка в collect_system_info: {str(e)}")
+        insert_line(f"❌ Критическая ошибка: {str(e)}", "crit")
+    
+    finally:
         try:
-            for gpu in c.Win32_VideoController():
-                insert_line(f"Модель: {gpu.Name}")
-                if hasattr(gpu, 'AdapterRAM'):
-                    ram_mb = int(gpu.AdapterRAM) / 1024 / 1024
-                    insert_line(f"Память: {ram_mb:.0f} МБ")
+            info_text.config(state="disabled")
         except Exception:
-            insert_line("❌ Не получено", "warn")
-    else:
-        insert_line("🔧 WMI недоступен — нет данных о плате/GPU", "warn")
-    safe_print("✅ Информация собрана")
-    info_text.config(state="disabled")
+            pass
 
 def collect_processes():
-    proc_text.config(state="normal")
-    proc_text.delete("1.0", "end")
-    safe_print("🔄 Сбор: Процессы...")
-    header("🧩 ПРОЦЕССЫ", "proc")
-    insert_line("PID | Имя | CPU% | RAM (MB)", "header", "proc")
-    processes = []
     try:
-        for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info']):
-            processes.append({
-                'pid': p.info['pid'],
-                'name': p.info['name'][:18],
-                'cpu': p.info['cpu_percent'] or 0,
-                'ram': p.info['memory_info'].rss / 1024 / 1024
-            })
-        processes.sort(key=lambda x: x['cpu'], reverse=True)
-        for proc in processes[:25]:
-            color = "high" if proc['cpu'] > 50 else "med" if proc['cpu'] > 10 else "low"
-            insert_line(f"{proc['pid']:5} | {proc['name']:<18} | {proc['cpu']:5.1f} | {proc['ram']:7.1f}", color, "proc")
+        proc_text.config(state="normal")
+        proc_text.delete("1.0", "end")
+        safe_print("🔄 Сбор данных: Процессы...")
+        header("🧩 АКТИВНЫЕ ПРОЦЕССЫ", "proc")
+        insert_line("PID | Имя | CPU% | RAM (MB) | Пользователь", "header", "proc")
+        processes = []
+        
+        try:
+            for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'username']):
+                try:
+                    processes.append({
+                        'pid': p.info['pid'],
+                        'name': p.info['name'][:20],
+                        'cpu': p.info['cpu_percent'] or 0,
+                        'ram': p.info['memory_info'].rss / 1024 / 1024 if p.info['memory_info'] else 0,
+                        'user': p.info['username'][:12] if p.info['username'] else 'SYSTEM'
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                    continue
+                except Exception as e:
+                    safe_print(f"Ошибка процесса {p.info.get('pid', 'N/A')}: {str(e)}")
+            
+            # Обновляем CPU процент для всех процессов
+            try:
+                psutil.cpu_percent(interval=0.1)  # Первый вызов игнорируется
+                time.sleep(0.1)
+                
+                for p in processes:
+                    try:
+                        proc = psutil.Process(p['pid'])
+                        p['cpu'] = proc.cpu_percent(interval=0)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                    except Exception as e:
+                        safe_print(f"Ошибка обновления CPU для PID {p['pid']}: {str(e)}")
+            except Exception as e:
+                safe_print(f"Ошибка обновления CPU процентов: {str(e)}")
+            
+            processes.sort(key=lambda x: x['cpu'], reverse=True)
+            
+            for proc in processes[:30]:
+                color = "high" if proc['cpu'] > 50 else "med" if proc['cpu'] > 10 else "low"
+                insert_line(f"{proc['pid']:6} | {proc['name']:<20} | {proc['cpu']:5.1f} | {proc['ram']:7.1f} | {proc['user']:<12}", color, "proc")
+            
+            # Статистика
+            insert_line("", "proc")
+            insert_line(f"Всего процессов: {len(processes)}", "header", "proc")
+            
+        except Exception as e:
+            insert_line(f"Ошибка сбора процессов: {str(e)}", "crit", "proc")
+        
+        safe_print("✅ Процессы собраны")
+    
     except Exception as e:
-        insert_line(f"Ошибка: {e}", "crit", "proc")
-    safe_print("✅ Процессы собраны")
-    proc_text.config(state="disabled")
+        safe_print(f"❌ Критическая ошибка в collect_processes: {str(e)}")
+    
+    finally:
+        try:
+            proc_text.config(state="disabled")
+        except Exception:
+            pass
 
 def collect_network_connections():
-    net_text.config(state="normal")
-    net_text.delete("1.0", "end")
-    safe_print("🔄 Сбор: Сеть...")
-    header("🌐 ПОДКЛЮЧЕНИЯ", "net")
-    insert_line("Протокол | Локальный | Удалённый | Статус | Процесс", "header", "net")
     try:
-        for conn in psutil.net_connections(kind='inet')[:30]:
-            laddr = f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else "::"
-            raddr = f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else "-"
-            state = "✅" if conn.status == 'ESTABLISHED' else "👂" if conn.status == 'LISTEN' else "⏳"
-            proto = "TCP" if conn.type == 1 else "UDP"
+        net_text.config(state="normal")
+        net_text.delete("1.0", "end")
+        safe_print("🔄 Сбор данных: Сеть...")
+        header("🌐 СЕТЕВЫЕ ПОДКЛЮЧЕНИЯ", "net")
+        
+        try:
+            # Сетевые интерфейсы
+            header("📡 СЕТЕВЫЕ ИНТЕРФЕЙСЫ", "net")
+            interfaces = psutil.net_if_addrs()
+            stats = psutil.net_if_stats()
+            
+            for iface, addrs in interfaces.items():
+                try:
+                    insert_line(f"📶 {iface}:", "header", "net")
+                    if iface in stats:
+                        stat = stats[iface]
+                        status_text = '✅ ВКЛ' if stat.isup else '❌ ВЫКЛ'
+                        tag = "good" if stat.isup else "warn"
+                        insert_line(f"  Статус: {status_text} | MTU: {stat.mtu}", tag, "net")
+                    
+                    for addr in addrs:
+                        try:
+                            if addr.family == psutil.AF_INET:
+                                insert_line(f"  IPv4: {addr.address}/{addr.netmask}", "good", "net")
+                            elif addr.family == psutil.AF_INET6:
+                                insert_line(f"  IPv6: {addr.address}", "good", "net")
+                            elif addr.family == psutil.AF_LINK:
+                                insert_line(f"  MAC: {addr.address}", "good", "net")
+                        except Exception as e:
+                            insert_line(f"  Ошибка адреса: {str(e)}", "warn", "net")
+                except Exception as e:
+                    insert_line(f"Ошибка интерфейса {iface}: {str(e)}", "warn", "net")
+            
+            insert_line("", "net")
+            
+            # Активные подключения
+            header("🔗 АКТИВНЫЕ ПОДКЛЮЧЕНИЯ", "net")
+            insert_line("Протокол | Локальный адрес | Удалённый адрес | Статус | PID", "header", "net")
+            
+            connections = []
             try:
-                proc_name = psutil.Process(conn.pid).name() if conn.pid else "Система"
-            except Exception:
-                proc_name = "Неизв."
-            insert_line(f"{proto:6} | {laddr[:15]:<15} | {raddr[:15]:<15} | {state:4} | {proc_name[:12]}", "good", "net")
+                connections = psutil.net_connections(kind='inet')
+            except psutil.AccessDenied as e:
+                insert_line(f"⚠️ Требуются права администратора: {str(e)}", "warn", "net")
+            except Exception as e:
+                insert_line(f"⚠️ Ошибка получения подключений: {str(e)}", "warn", "net")
+            
+            for conn in connections[:40]:
+                try:
+                    laddr = f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else "0.0.0.0:0"
+                    raddr = f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else "-"
+                    
+                    status_map = {
+                        'ESTABLISHED': '✅',
+                        'LISTEN': '👂',
+                        'TIME_WAIT': '⏳',
+                        'CLOSE_WAIT': '⌛'
+                    }
+                    status_icon = status_map.get(conn.status, '❓')
+                    
+                    proto = "TCP" if conn.type == 1 else "UDP"
+                    
+                    proc_name = "Система"
+                    if conn.pid:
+                        try:
+                            proc = psutil.Process(conn.pid)
+                            proc_name = proc.name()[:15]
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            proc_name = f"[{conn.pid}]"
+                        except Exception:
+                            proc_name = f"PID:{conn.pid}"
+                    
+                    color = "good" if conn.status == 'ESTABLISHED' else "warn" if conn.status == 'LISTEN' else "low"
+                    insert_line(f"{proto:6} | {laddr:<20} | {raddr:<20} | {status_icon} {conn.status:<10} | {proc_name}", color, "net")
+                except Exception as e:
+                    safe_print(f"Ошибка обработки подключения: {str(e)}")
+                    continue
+            
+            # Сетевая статистика
+            insert_line("", "net")
+            header("📊 СЕТЕВАЯ СТАТИСТИКА", "net")
+            
+            try:
+                net_io = psutil.net_io_counters()
+                insert_line(f"Отправлено: {get_size(net_io.bytes_sent)}", "good", "net")
+                insert_line(f"Получено: {get_size(net_io.bytes_recv)}", "good", "net")
+                insert_line(f"Пакеты отправлено: {net_io.packets_sent}", "good", "net")
+                insert_line(f"Пакеты получено: {net_io.packets_recv}", "good", "net")
+                insert_line(f"Ошибки отправки: {net_io.errout}", "warn" if net_io.errout > 0 else "good", "net")
+                insert_line(f"Ошибки получения: {net_io.errin}", "warn" if net_io.errin > 0 else "good", "net")
+            except Exception as e:
+                insert_line(f"Ошибка сетевой статистики: {str(e)}", "warn", "net")
+            
+        except Exception as e:
+            insert_line(f"Критическая ошибка сети: {str(e)}", "crit", "net")
+        
+        safe_print("✅ Сетевые данные собраны")
+    
     except Exception as e:
-        insert_line(f"Ошибка: {e}", "crit", "net")
-    safe_print("✅ Сеть собрана")
-    net_text.config(state="disabled")
+        safe_print(f"❌ Критическая ошибка в collect_network_connections: {str(e)}")
+    
+    finally:
+        try:
+            net_text.config(state="disabled")
+        except Exception:
+            pass
 
 # === Графики ===
 MAX_POINTS = 150
@@ -299,6 +569,7 @@ def update_graphs():
         net_down.append(max(0, min(down, 8000)))
         net_up.append(max(0, min(up, 8000)))
         net_old = new_net
+        
         cpu_usage.append(psutil.cpu_percent(interval=None))
         ram_usage.append(psutil.virtual_memory().percent)
 
@@ -307,21 +578,28 @@ def update_graphs():
         h = 240
 
         def draw(data, y, col, label):
-            points = []
-            for i, val in enumerate(data):
-                x = i * (w / MAX_POINTS)
-                point_y = y - (val / 100) * (h - 40)
-                points.extend([x, point_y])
-            if len(points) > 2:
-                canvas.create_line(points, fill=col, width=2, smooth=True)
-            canvas.create_text(70, y - 15, text=label, fill=col, font=info_font)
+            try:
+                points = []
+                for i, val in enumerate(data):
+                    x = i * (w / MAX_POINTS)
+                    point_y = y - (val / 100) * (h - 40)
+                    points.extend([x, point_y])
+                if len(points) > 2:
+                    canvas.create_line(points, fill=col, width=2, smooth=True)
+                canvas.create_text(70, y - 15, text=label, fill=col, font=info_font)
+            except Exception as e:
+                safe_print(f"Ошибка draw графиков: {str(e)}")
 
         draw(net_down, 50, "#00ccff", "⬇ КБ/с")
-        draw(net_up, 100, "#00ffaa", "⬆ Отпр.")
+        draw(net_up, 100, "#00ffaa", "⬆ КБ/с")
         draw(cpu_usage, 150, "#ff5555", "📊 CPU %")
         draw(ram_usage, 200, "#ffaa33", "🧠 RAM %")
+        
+        # Добавляем легенду
+        canvas.create_text(w - 80, 20, text="Реальное время", fill="#ffffff", font=("Consolas", 9))
+        
     except Exception as e:
-        safe_print(f"❌ График: {e}")
+        safe_print(f"❌ Ошибка обновления графиков: {str(e)}")
 
     root.after(1000, update_graphs)
 
@@ -332,27 +610,30 @@ canvas = tk.Canvas(graph_frame, bg="#111", height=240, highlightthickness=0)
 canvas.pack(fill="both", expand=True, padx=15, pady=8)
 
 # ========================================
-# 🎮 ОВЕРЛЕЙ (HUD) — ИСПРАВЛЕН
+# 🎮 ОВЕРЛЕЙ (HUD)
 # ========================================
 config_file = "overlay_config.json"
 default_config = {"x": 50, "y": 50, "width": 240, "height": 110}
 
 try:
-    overlay_config = json.load(open(config_file)) if os.path.exists(config_file) else default_config
-except Exception:
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            overlay_config = json.load(f)
+    else:
+        overlay_config = default_config
+except Exception as e:
+    safe_print(f"⚠️ Ошибка загрузки конфига оверлея: {str(e)}")
     overlay_config = default_config
 
-# === Оверлей: НЕ закрывается крестиком, только F8 ===
 overlay = tk.Toplevel(root)
 overlay.title("🎮 HUD")
 overlay.geometry(f"{overlay_config['width']}x{overlay_config['height']}+{overlay_config['x']}+{overlay_config['y']}")
-overlay.overrideredirect(True)  # Убираем рамку и крестик
+overlay.overrideredirect(True)
 overlay.attributes("-topmost", True)
 overlay.attributes("-alpha", 0.93)
 overlay.configure(bg="black")
 
-# Защита от закрытия
-overlay.protocol("WM_DELETE_WINDOW", lambda: None)  # Игнорировать крестик
+overlay.protocol("WM_DELETE_WINDOW", lambda: None)
 
 overlay_label = tk.Label(
     overlay,
@@ -375,89 +656,160 @@ current_full_text = ""
 current_minimized_text = ""
 
 def toggle_minimize():
-    global is_overlay_minimized
-    overlay_label.config(text=current_minimized_text if is_overlay_minimized else current_full_text)
-    minimize_btn.config(text="▶" if is_overlay_minimized else "◀")
-    overlay.geometry("240x20" if is_overlay_minimized else f"{overlay_config['width']}x{overlay_config['height']}")
-    is_overlay_minimized = not is_overlay_minimized
-
-def save_pos(e):
-    pos = overlay.winfo_geometry().split('+')
     try:
-        overlay_config.update({"x": int(pos[1]), "y": int(pos[2])})
+        global is_overlay_minimized
+        if is_overlay_minimized:
+            overlay_label.config(text=current_full_text)
+            minimize_btn.config(text="◀")
+            overlay.geometry(f"{overlay_config['width']}x{overlay_config['height']}")
+        else:
+            overlay_label.config(text=current_minimized_text)
+            minimize_btn.config(text="▶")
+            overlay.geometry("240x20")
+        
+        is_overlay_minimized = not is_overlay_minimized
+    except Exception as e:
+        safe_print(f"Ошибка toggle_minimize: {str(e)}")
+
+def save_pos(event=None):
+    try:
+        pos = overlay.winfo_geometry().split('+')
+        overlay_config.update({
+            "x": int(pos[1]),
+            "y": int(pos[2]),
+            "width": overlay.winfo_width(),
+            "height": overlay.winfo_height()
+        })
         with open(config_file, "w") as f:
             json.dump(overlay_config, f)
     except Exception as e:
-        return f"{str(e)}"
+        safe_print(f"⚠️ Ошибка сохранения позиции оверлея: {str(e)}")
 
 overlay_label.bind("<Button-1>", lambda e: [setattr(overlay, '_x', e.x), setattr(overlay, '_y', e.y)])
 overlay_label.bind("<B1-Motion>", lambda e: overlay.geometry(f'+{e.x_root - overlay._x}+{e.y_root - overlay._y}'))
 minimize_btn.bind("<Button-1>", lambda e: toggle_minimize())
 overlay.bind("<ButtonRelease-1>", save_pos)
 
-# === F8: только для оверлея, НЕ закрывает программу ===
 def toggle_overlay(event=None):
-    if overlay.state() == "withdrawn":
-        overlay.deiconify()
-    else:
-        overlay.withdraw()
+    try:
+        if overlay.state() == "withdrawn":
+            overlay.deiconify()
+        else:
+            overlay.withdraw()
+    except Exception as e:
+        safe_print(f"Ошибка toggle_overlay: {str(e)}")
 
 root.bind("<F8>", toggle_overlay)
-overlay.bind("<F8>", toggle_overlay)  # Для удобства
+overlay.bind("<F8>", toggle_overlay)
 
-# === Обновление оверлея ===
 def update_overlay():
     global current_full_text, current_minimized_text
 
-    if not hasattr(update_overlay, 'last_time'):
-        update_overlay.last_time = time.time()
-        fps = 0
-    else:
-        now = time.time()
-        fps = int(1 / (now - update_overlay.last_time)) if (now - update_overlay.last_time) > 0 else 60
-        update_overlay.last_time = now
-
-    cpu = psutil.cpu_percent(interval=None)
-    ram = psutil.virtual_memory()
-    ram_p = ram.percent
-
-    temp = "N/A"
     try:
-        temps = psutil.sensors_temperatures()
-        if temps:
-            if "coretemp" in temps:
-                temp = max(t.current for t in temps["coretemp"])
-            elif "cpu_thermal" in temps:
-                temp = temps["cpu_thermal"][0].current
+        if not hasattr(update_overlay, 'last_time'):
+            update_overlay.last_time = time.time()
+            update_overlay.frame_count = 0
+            fps = 0
+        else:
+            update_overlay.frame_count += 1
+            now = time.time()
+            if now - update_overlay.last_time >= 1.0:
+                fps = update_overlay.frame_count
+                update_overlay.frame_count = 0
+                update_overlay.last_time = now
+            else:
+                fps = int(1 / (now - update_overlay.last_time)) if (now - update_overlay.last_time) > 0 else 0
+
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        ram_p = ram.percent
+
+        temp = None
+        try:
+            temps = psutil.sensors_temperatures()
+            if temps:
+                for key in ['coretemp', 'cpu_thermal', 'acpitz', 'k10temp']:
+                    if key in temps and temps[key]:
+                        temp = max(t.current for t in temps[key] if hasattr(t, 'current'))
+                        break
+        except AttributeError:
+            # psutil.sensors_temperatures() может быть недоступен на некоторых системах
+            temp = None
+        except Exception as e:
+            safe_print(f"Ошибка температуры: {str(e)}")
+            temp = None
+
+        color = "#ff3333" if temp and temp > 80 else \
+                "#ffaa00" if temp and temp > 65 else "#00ff88"
+        temp_str = f"{temp:.0f}°C" if temp else "N/A"
+
+        battery = None
+        try:
+            battery = psutil.sensors_battery()
+        except Exception as e:
+            safe_print(f"Ошибка батареи: {str(e)}")
+            battery = None
+        
+        battery_str = f"🔋{battery.percent}%" if battery and hasattr(battery, 'percent') else ""
+
+        disk_usage = None
+        try:
+            disk = psutil.disk_usage('/' if platform.system() != 'Windows' else 'C:\\')
+            disk_usage = disk.percent
+        except Exception as e:
+            disk_usage = None
+
+        current_minimized_text = f"FPS:{fps:3d} | CPU:{cpu:4.1f}% | RAM:{ram_p:4.1f}%"
+        
+        full_text_lines = [
+            f"FPS: {fps:3d} | CPU: {cpu:4.1f}%",
+            f"RAM: {ram_p:4.1f}% | {ram.used//1024//1024:4d}/{ram.total//1024//1024:4d} MB",
+            f"Temp: {temp_str:8} | {battery_str}"
+        ]
+        
+        if disk_usage:
+            full_text_lines.append(f"Disk: {disk_usage:4.1f}% занято")
+        
+        current_full_text = "\n".join(full_text_lines)
+
+        overlay_label.config(text=current_minimized_text if is_overlay_minimized else current_full_text, fg=color)
+    
     except Exception as e:
-        return f"{str(e)}"
+        safe_print(f"Ошибка update_overlay: {str(e)}")
+    
+    finally:
+        try:
+            overlay.after(500, update_overlay)
+        except Exception as e:
+            safe_print(f"Ошибка планирования update_overlay: {str(e)}")
 
-    color = "#ff3333" if isinstance(temp, (int, float)) and temp > 80 else \
-            "#ffaa00" if isinstance(temp, (int, float)) and temp > 65 else "#00ff88"
-    temp = f"{temp:.0f}" if isinstance(temp, (int, float)) else "N/A"
+# === Кнопка обновления данных ===
+def refresh_all():
+    try:
+        safe_print("🔄 Обновление всех данных...")
+        collect_system_info()
+        collect_processes()
+        collect_network_connections()
+        safe_print("✅ Все данные обновлены")
+    except Exception as e:
+        safe_print(f"❌ Ошибка при обновлении данных: {str(e)}")
 
-    battery = psutil.sensors_battery()
-    battery_str = f"🔋{battery.percent}%" if battery else ""
+btn_refresh = tk.Button(root, text="🔄 Обновить", font=("Arial", 10), bg="#22aa22", fg="white", command=refresh_all)
+btn_refresh.pack(pady=4)
 
-    current_minimized_text = f"FPS:{fps:3d} | CPU:{cpu:4.1f}% | RAM:{ram_p:4.1f}%"
-    current_full_text = (
-        f"FPS: {fps:3d} | CPU: {cpu:4.1f}%\n"
-        f"RAM: {ram_p:4.1f}% | {ram.used//1024//1024:4d}/{ram.total//1024//1024:4d} MB\n"
-        f"Temp: {temp}°C       | {battery_str}"
-    )
-
-    overlay_label.config(text=current_minimized_text if is_overlay_minimized else current_full_text, fg=color)
-    overlay.after(500, update_overlay)
-
-# === ЗАПУСК ===
+# === Запуск ===
 safe_print("🚀 Запуск сбора данных...")
-collect_system_info()
-collect_processes()
-collect_network_connections()
+refresh_all()
 
 root.after(100, update_graphs)
 root.after(100, update_overlay)
 
 safe_print("🟢 Приложение готово. F8 — показать/скрыть оверлей.")
-root.mainloop()
+safe_print("🔄 Автоматическое обновление графиков каждую секунду")
 
+try:
+    root.mainloop()
+except KeyboardInterrupt:
+    safe_print("🛑 Приложение остановлено пользователем")
+except Exception as e:
+    safe_print(f"❌ Критическая ошибка в mainloop: {str(e)}")
