@@ -1,16 +1,73 @@
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 import platform
 import datetime
 import os
-import wmi
+import json
+import time
 import psutil
 from collections import deque
 import sys
 import io
-import json
-import time
+import threading
+import numpy as np
+import socket
+import subprocess
+import ctypes
+import sys
+
+# === ПРОВЕРКА ПРАВ АДМИНИСТРАТОРА ===
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+if not is_admin():
+    # Запускаем себя с правами администратора
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, " ".join(sys.argv), None, 1
+    )
+    sys.exit()
+
+# === ПИКСЕЛЬНЫЙ СТИЛЬ ===
+COLORS = {
+    "bg_dark": "#000000",
+    "bg_card": "#0a0a0a",
+    "bg_hover": "#1a1a1a",
+    "border": "#333333",
+    "text_primary": "#ffffff",
+    "text_secondary": "#cccccc",
+    "text_muted": "#888888",
+    "cpu_color": "#ff5555",
+    "gpu_color": "#aa55ff",
+    "ram_color": "#55aaff",
+    "disk_color": "#55ffaa",
+    "net_color": "#ffaa55",
+    "temp_cool": "#55aaff",
+    "temp_warm": "#ffaa55",
+    "temp_hot": "#ff5555",
+    "success": "#00ff88",
+    "warning": "#ffaa00",
+    "danger": "#ff5555",
+    "info": "#55aaff",
+    "battery_full": "#00ff88",
+    "battery_medium": "#ffaa00",
+    "battery_low": "#ff5555",
+    "fps_good": "#00ff88",
+    "fps_medium": "#ffaa00",
+    "fps_low": "#ff5555",
+    "ping_good": "#00ff88",
+    "ping_medium": "#ffaa00",
+    "ping_bad": "#ff5555",
+}
+
+# === ШРИФТЫ ===
+PIXEL_FONT = ("Consolas", 10)
+PIXEL_FONT_BOLD = ("Consolas", 10, "bold")
+PIXEL_FONT_TITLE = ("Consolas", 12, "bold")
+PIXEL_FONT_SMALL = ("Consolas", 9)
 
 # === Глобальный логгер ===
 def safe_print(message):
@@ -19,7 +76,7 @@ def safe_print(message):
             log_text.insert("end", message + "\n", "log")
             log_text.see("end")
         else:
-            print(message)
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {message}")
     except Exception as e:
         print(f"Ошибка safe_print: {str(e)}")
 
@@ -28,788 +85,995 @@ class TextRedirect(io.StringIO):
     def __init__(self, text_widget):
         super().__init__()
         self.text_widget = text_widget
+        self.buffer = ""
 
     def write(self, s):
         try:
-            if s.strip():
-                tag = "error" if "Traceback" in s or "Error" in s else "log"
-                self.text_widget.insert("end", s, tag)
-                self.text_widget.see("end")
+            self.buffer += s
+            if '\n' in self.buffer:
+                lines = self.buffer.split('\n')
+                for line in lines[:-1]:
+                    if line.strip():
+                        tag = "error" if any(keyword in line.lower() for keyword in ["error", "traceback", "fail", "critical"]) else "log"
+                        timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+                        self.text_widget.insert("end", f"[{timestamp}] {line}\n", tag)
+                        self.text_widget.see("end")
+                self.buffer = lines[-1]
         except Exception as e:
             print(f"Ошибка TextRedirect: {str(e)}")
 
     def flush(self):
         pass
 
-# === WMI (только Windows) ===
-wmi_available = False
-wmi_module = None
-
-if platform.system() == "Windows":
+# === GPU ИНФОРМАЦИЯ ===
+def get_gpu_info():
+    """Получение информации о видеокартах"""
+    gpu_info = []
+    
+    # Пробуем через nvidia-smi для NVIDIA
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,temperature.gpu,utilization.gpu,memory.total,memory.used', '--format=csv,noheader,nounits'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split('\n')
+            for i, line in enumerate(lines):
+                parts = line.split(', ')
+                if len(parts) >= 5:
+                    name = parts[0].strip()
+                    temp = float(parts[1].strip())
+                    load = float(parts[2].strip())
+                    mem_total = float(parts[3].strip())
+                    mem_used = float(parts[4].strip())
+                    
+                    gpu_data = {
+                        'id': i,
+                        'name': name,
+                        'load': load,
+                        'temperature': temp,
+                        'memory_total': mem_total,
+                        'memory_used': mem_used,
+                        'memory_free': mem_total - mem_used,
+                        'driver': 'NVIDIA',
+                        'active': load > 5
+                    }
+                    
+                    # Определение цвета для температуры
+                    if temp > 85:
+                        gpu_data['temp_color'] = COLORS['temp_hot']
+                    elif temp > 75:
+                        gpu_data['temp_color'] = COLORS['temp_warm']
+                    else:
+                        gpu_data['temp_color'] = COLORS['temp_cool']
+                    
+                    # Определение цвета для загрузки
+                    if load > 90:
+                        gpu_data['load_color'] = COLORS['danger']
+                    elif load > 70:
+                        gpu_data['load_color'] = COLORS['warning']
+                    else:
+                        gpu_data['load_color'] = COLORS['success']
+                    
+                    gpu_info.append(gpu_data)
+            
+            safe_print(f"✅ Обнаружено видеокарт NVIDIA: {len(gpu_info)}")
+            return gpu_info
+    except:
+        pass
+    
+    # Пробуем через dxdiag для Windows
     try:
         import wmi
-        wmi_module = wmi.WMI()
-        wmi_available = True
-        safe_print("✅ WMI подключен")
-    except ImportError as e:
-        safe_print(f"⚠️ WMI не установлен: {str(e)}")
+        w = wmi.WMI()
+        gpu_devices = w.Win32_VideoController()
+        
+        for i, gpu in enumerate(gpu_devices):
+            gpu_data = {
+                'id': i,
+                'name': gpu.Name,
+                'load': 0,  # Недоступно через WMI
+                'temperature': 0,  # Недоступно через WMI
+                'memory_total': 0,
+                'memory_used': 0,
+                'memory_free': 0,
+                'driver': gpu.DriverVersion if hasattr(gpu, 'DriverVersion') else 'Unknown',
+                'active': True,
+                'temp_color': COLORS['temp_cool'],
+                'load_color': COLORS['success']
+            }
+            
+            # Пытаемся получить память
+            try:
+                if hasattr(gpu, 'AdapterRAM'):
+                    mem_bytes = int(gpu.AdapterRAM)
+                    gpu_data['memory_total'] = mem_bytes / (1024 * 1024)  # MB
+            except:
+                pass
+            
+            gpu_info.append(gpu_data)
+        
+        safe_print(f"✅ Обнаружено видеокарт через WMI: {len(gpu_info)}")
+        return gpu_info
+        
     except Exception as e:
-        safe_print(f"⚠️ Ошибка WMI: {str(e)}")
-else:
-    safe_print("ℹ️ WMI доступен только для Windows")
+        safe_print(f"⚠️ Ошибка получения информации GPU: {str(e)}")
+    
+    return gpu_info
+
+# === ФУНКЦИИ ДЛЯ ОВЕРЛЕЯ ===
+def get_fps():
+    """Получение FPS (пока заглушка)"""
+    try:
+        # Временная заглушка - всегда показывает 60 FPS
+        fps = 60
+        
+        if fps > 100:
+            color = COLORS['fps_good']
+            status = "Отлично"
+        elif fps > 60:
+            color = COLORS['fps_medium']
+            status = "Хорошо"
+        elif fps > 30:
+            color = COLORS['fps_low']
+            status = "Средне"
+        else:
+            color = COLORS['danger']
+            status = "Плохо"
+        
+        return {
+            'value': fps,
+            'color': color,
+            'status': status
+        }
+    except Exception as e:
+        safe_print(f"⚠️ Ошибка получения FPS: {str(e)}")
+        return None
+
+def get_ping():
+    """Получение пинга"""
+    try:
+        # Пинг к Google DNS
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        
+        start_time = time.time()
+        try:
+            sock.connect(('8.8.8.8', 53))
+            ping_ms = (time.time() - start_time) * 1000
+        except:
+            ping_ms = 50  # Значение по умолчанию если не удалось
+        
+        sock.close()
+        
+        if ping_ms < 30:
+            color = COLORS['ping_good']
+            status = "Отлично"
+        elif ping_ms < 60:
+            color = COLORS['ping_medium']
+            status = "Хорошо"
+        elif ping_ms < 100:
+            color = COLORS['ping_bad']
+            status = "Средне"
+        else:
+            color = COLORS['danger']
+            status = "Плохо"
+        
+        return {
+            'value': int(ping_ms),
+            'color': color,
+            'status': status
+        }
+        
+    except Exception as e:
+        safe_print(f"⚠️ Ошибка получения пинга: {str(e)}")
+        return None
+
+# === БАТАРЕЯ ===
+def get_battery_info():
+    """Получение информации о батарее"""
+    try:
+        battery = psutil.sensors_battery()
+        if battery:
+            battery_info = {
+                'percent': battery.percent,
+                'plugged': battery.power_plugged,
+                'time_left': battery.secsleft if hasattr(battery, 'secsleft') else None
+            }
+            
+            # Определение цвета батареи
+            if battery.percent > 70:
+                battery_info['color'] = COLORS['battery_full']
+            elif battery.percent > 30:
+                battery_info['color'] = COLORS['battery_medium']
+            else:
+                battery_info['color'] = COLORS['battery_low']
+                
+            # Определение статуса
+            if battery.power_plugged:
+                battery_info['status'] = "Заряжается" if battery.percent < 100 else "Заряжена"
+            else:
+                battery_info['status'] = "Разряжается"
+            
+            return battery_info
+    except Exception as e:
+        safe_print(f"⚠️ Ошибка получения информации о батарее: {str(e)}")
+    
+    # Если батареи нет (стационарный ПК)
+    return {
+        'percent': 100,
+        'plugged': True,
+        'time_left': None,
+        'color': COLORS['battery_full'],
+        'status': 'Питание от сети'
+    }
 
 # === Функция перевода байтов ===
 def get_size(bytes_value: float) -> str:
     try:
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if bytes_value < 1024.0:
-                return f"{bytes_value:.2f} {unit}"
+                return f"{bytes_value:.1f} {unit}"
             bytes_value /= 1024.0
-        return f"{bytes_value:.2f} PB"
+        return f"{bytes_value:.1f} PB"
     except Exception as e:
         return f"Ошибка: {str(e)}"
 
-# === Настройка окна ===
+# === НАСТРОЙКА ОКНА ===
 root = tk.Tk()
-root.title("📊 Мониторинг ПК + Инвентаризация")
-root.geometry("1000x700")
-root.minsize(850, 550)
-root.configure(bg="#0a0a0a")
+root.title("█▄ SYSTEM TERMINAL v1.0 ██")
+root.geometry("1200x800")
+root.minsize(1000, 600)
+root.configure(bg=COLORS['bg_dark'])
 
-# === Верхняя панель вкладок ===
-notebook = ttk.Notebook(root)
-notebook.pack(fill="both", expand=True, padx=8, pady=8)
-
-# === Шрифты ===
-title_font = tkfont.Font(family="Consolas", size=12, weight="bold")
-info_font = tkfont.Font(family="Consolas", size=9)
-mono_font = tkfont.Font(family="Consolas", size=9)
-
-# === Стиль ===
+# === СТИЛЬ TTK ===
 style = ttk.Style()
 style.theme_use("clam")
-style.configure("TNotebook", background="#0a0a0a", foreground="white")
-style.configure("TNotebook.Tab", background="#1e1e1e", foreground="#00ffaa", padding=(12, 6))
-style.map("TNotebook.Tab",
-          background=[("selected", "#005f5f")],
-          foreground=[("selected", "#00ffff")])
 
-# === Цветовые теги ===
-def add_tags(text_widget):
+# Конфигурация стилей для пиксельного дизайна
+style.configure("Pixel.TFrame", background=COLORS['bg_card'], relief="flat", borderwidth=2)
+style.configure("Pixel.TLabel", background=COLORS['bg_card'], foreground=COLORS['text_primary'], 
+                font=PIXEL_FONT)
+style.configure("Pixel.TButton", background=COLORS['bg_card'], foreground=COLORS['text_primary'],
+                font=PIXEL_FONT, borderwidth=1, relief="raised")
+style.map("Pixel.TButton",
+          background=[('active', COLORS['bg_hover'])],
+          foreground=[('active', COLORS['success'])])
+
+# === ВЕРХНЯЯ ПАНЕЛЬ ===
+header_frame = ttk.Frame(root, style="Pixel.TFrame")
+header_frame.pack(fill="x", padx=5, pady=5)
+
+# Заголовок в стиле терминала
+title_label = tk.Label(header_frame, text="╔══════════════════════════════════════════════════════╗", 
+                       bg=COLORS['bg_dark'], fg=COLORS['text_primary'], font=PIXEL_FONT)
+title_label.pack()
+
+title_label = tk.Label(header_frame, text="║                SYSTEM TERMINAL v1.0                  ║", 
+                       bg=COLORS['bg_dark'], fg=COLORS['success'], font=PIXEL_FONT_TITLE)
+title_label.pack()
+
+title_label = tk.Label(header_frame, text="╚══════════════════════════════════════════════════════╝", 
+                       bg=COLORS['bg_dark'], fg=COLORS['text_primary'], font=PIXEL_FONT)
+title_label.pack()
+
+# Кнопки управления
+button_frame = ttk.Frame(header_frame, style="Pixel.TFrame")
+button_frame.pack(fill="x", pady=10)
+
+def save_report():
+    """Сохранение отчета в файл"""
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".txt",
+        filetypes=[
+            ("Текстовый файл", "*.txt"),
+            ("JSON файл", "*.json"),
+            ("Все файлы", "*.*")
+        ],
+        title="Сохранить отчет о системе"
+    )
+    
+    if not file_path:
+        return
+    
     try:
-        text_widget.tag_config("good", foreground="#00ff88")
-        text_widget.tag_config("warn", foreground="#ffaa00")
-        text_widget.tag_config("crit", foreground="#ff5555")
-        text_widget.tag_config("header", foreground="#00aaff", font=("Consolas", 12, "bold"))
-        text_widget.tag_config("high", foreground="#ff3333")
-        text_widget.tag_config("med", foreground="#ffcc00")
-        text_widget.tag_config("low", foreground="#00ccff")
-        text_widget.tag_config("log", foreground="#cccccc")
-        text_widget.tag_config("error", foreground="#ff5555")
+        report_data = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "system": {
+                "os": platform.system(),
+                "version": platform.version(),
+                "architecture": platform.architecture()[0],
+                "hostname": platform.node(),
+                "processor": platform.processor(),
+                "python_version": platform.python_version()
+            },
+            "cpu": {
+                "cores_physical": psutil.cpu_count(logical=False),
+                "cores_logical": psutil.cpu_count(logical=True),
+                "frequency": psutil.cpu_freq().current if psutil.cpu_freq() else 0
+            },
+            "memory": {
+                "total": psutil.virtual_memory().total,
+                "used": psutil.virtual_memory().used,
+                "percent": psutil.virtual_memory().percent
+            },
+            "gpu": [],
+            "disks": [],
+            "network": {}
+        }
+        
+        # GPU информация
+        gpus = get_gpu_info()
+        for gpu in gpus:
+            report_data["gpu"].append({
+                "name": gpu.get('name', 'Unknown'),
+                "load": gpu.get('load', 0),
+                "temperature": gpu.get('temperature', 0),
+                "memory_total": gpu.get('memory_total', 0),
+                "memory_used": gpu.get('memory_used', 0)
+            })
+        
+        # Диски
+        for part in psutil.disk_partitions():
+            try:
+                usage = psutil.disk_usage(part.mountpoint)
+                report_data["disks"].append({
+                    "device": part.device,
+                    "mountpoint": part.mountpoint,
+                    "total": usage.total,
+                    "used": usage.used,
+                    "percent": usage.percent
+                })
+            except:
+                pass
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            if file_path.endswith('.json'):
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
+            else:
+                f.write("╔══════════════════════════════════════════════════════╗\n")
+                f.write("║              SYSTEM DIAGNOSTIC REPORT               ║\n")
+                f.write("╚══════════════════════════════════════════════════════╝\n\n")
+                f.write(f"Generated: {datetime.datetime.now()}\n\n")
+                
+                f.write("=== SYSTEM INFORMATION ===\n")
+                f.write(f"OS: {platform.system()} {platform.version()}\n")
+                f.write(f"Architecture: {platform.architecture()[0]}\n")
+                f.write(f"Hostname: {platform.node()}\n")
+                f.write(f"Processor: {platform.processor()}\n")
+                f.write(f"Python: {platform.python_version()}\n\n")
+                
+                f.write("=== CPU INFORMATION ===\n")
+                f.write(f"Cores: {psutil.cpu_count(logical=False)} physical, {psutil.cpu_count(logical=True)} logical\n")
+                f.write(f"Frequency: {psutil.cpu_freq().current if psutil.cpu_freq() else 'N/A'} MHz\n\n")
+                
+                f.write("=== MEMORY INFORMATION ===\n")
+                vm = psutil.virtual_memory()
+                f.write(f"Total: {get_size(vm.total)}\n")
+                f.write(f"Used: {get_size(vm.used)} ({vm.percent:.1f}%)\n\n")
+                
+                if gpus:
+                    f.write("=== GPU INFORMATION ===\n")
+                    for gpu in gpus:
+                        f.write(f"{gpu.get('name', 'Unknown')}:\n")
+                        f.write(f"  Load: {gpu.get('load', 0):.1f}%\n")
+                        f.write(f"  Temperature: {gpu.get('temperature', 0):.1f}°C\n")
+                        if gpu.get('memory_total', 0) > 0:
+                            f.write(f"  Memory: {gpu.get('memory_used', 0):.1f}/{gpu.get('memory_total', 0):.1f} MB\n\n")
+        
+        safe_print(f"✅ Отчет сохранен: {file_path}")
+        
     except Exception as e:
-        safe_print(f"Ошибка add_tags: {str(e)}")
+        safe_print(f"❌ Ошибка сохранения отчета: {str(e)}")
 
-# === Вкладки ===
-info_frame = tk.Frame(notebook, bg="#0a0a0a")
-notebook.add(info_frame, text="🖥️ Инфо")
-tk.Label(info_frame, text="ПОЛНАЯ ИНВЕНТАРИЗАЦИЯ СИСТЕМЫ", font=title_font, fg="#00aaff", bg="#0a0a0a").pack(pady=8)
-info_text = tk.Text(info_frame, font=info_font, fg="#00ff88", bg="#111", insertbackground="green", wrap="word", relief="flat", highlightthickness=0)
-scroll_info = tk.Scrollbar(info_frame, command=info_text.yview)
-info_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-scroll_info.pack(side="right", fill="y")
-info_text.config(yscrollcommand=scroll_info.set)
-add_tags(info_text)
+# Создание кнопок в стиле терминала
+def create_pixel_button(parent, text, command, color=COLORS['text_primary']):
+    btn = tk.Label(parent, text=f"[ {text} ]", bg=COLORS['bg_card'], fg=color, 
+                   font=PIXEL_FONT_BOLD, cursor="hand2", relief="raised", bd=1)
+    btn.bind("<Button-1>", lambda e: command())
+    btn.bind("<Enter>", lambda e: btn.config(bg=COLORS['bg_hover']))
+    btn.bind("<Leave>", lambda e: btn.config(bg=COLORS['bg_card']))
+    return btn
 
-proc_frame = tk.Frame(notebook, bg="#0a0a0a")
-notebook.add(proc_frame, text="🧩 Процессы")
-tk.Label(proc_frame, text="АКТИВНЫЕ ПРОЦЕССЫ", font=title_font, fg="#ff9900", bg="#0a0a0a").pack(pady=8)
-proc_text = tk.Text(proc_frame, font=info_font, fg="#00ff88", bg="#111", insertbackground="green", wrap="word", relief="flat", highlightthickness=0)
-scroll_proc = tk.Scrollbar(proc_frame, command=proc_text.yview)
-proc_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-scroll_proc.pack(side="right", fill="y")
-proc_text.config(yscrollcommand=scroll_proc.set)
-add_tags(proc_text)
+btn_refresh = create_pixel_button(button_frame, "🔄 ОБНОВИТЬ", lambda: refresh_all(), COLORS['success'])
+btn_refresh.pack(side="left", padx=5)
 
-net_frame = tk.Frame(notebook, bg="#0a0a0a")
-notebook.add(net_frame, text="🌐 Сеть")
-tk.Label(net_frame, text="СЕТЕВЫЕ ПОДКЛЮЧЕНИЯ", font=title_font, fg="#00ccff", bg="#0a0a0a").pack(pady=8)
-net_text = tk.Text(net_frame, font=info_font, fg="#00ff88", bg="#111", insertbackground="green", wrap="word", relief="flat", highlightthickness=0)
-scroll_net = tk.Scrollbar(net_frame, command=net_text.yview)
-net_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-scroll_net.pack(side="right", fill="y")
-net_text.config(yscrollcommand=scroll_net.set)
-add_tags(net_text)
+btn_save = create_pixel_button(button_frame, "💾 СОХРАНИТЬ", save_report, COLORS['info'])
+btn_save.pack(side="left", padx=5)
 
-log_frame = tk.Frame(notebook, bg="#0a0a0a")
-notebook.add(log_frame, text="📄 Логи")
-tk.Label(log_frame, text="ОТЛАДКА", font=title_font, fg="#ffffff", bg="#0a0a0a").pack(pady=8)
-log_text = tk.Text(log_frame, font=mono_font, fg="#00ff88", bg="#111", insertbackground="white", wrap="word", relief="sunken", highlightbackground="#333", state="normal")
-scroll_log = tk.Scrollbar(log_frame, command=log_text.yview)
-log_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-scroll_log.pack(side="right", fill="y")
-log_text.config(yscrollcommand=scroll_log.set)
-add_tags(log_text)
+btn_exit = create_pixel_button(button_frame, "⏻ ВЫХОД", root.quit, COLORS['danger'])
+btn_exit.pack(side="right", padx=5)
+
+# === ВКЛАДКИ ===
+notebook = ttk.Notebook(root)
+notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+# Настройка стиля вкладок в пиксельном стиле
+style.configure("Pixel.TNotebook", background=COLORS['bg_dark'], borderwidth=0)
+style.configure("Pixel.TNotebook.Tab", 
+                background=COLORS['bg_card'],
+                foreground=COLORS['text_secondary'],
+                padding=(15, 5),
+                font=PIXEL_FONT)
+style.map("Pixel.TNotebook.Tab",
+          background=[("selected", COLORS['bg_hover'])],
+          foreground=[("selected", COLORS['text_primary'])])
+
+# === ВКЛАДКА 1: СИСТЕМНЫЙ МОНИТОР ===
+monitor_frame = tk.Frame(notebook, bg=COLORS['bg_dark'])
+notebook.add(monitor_frame, text="📟 МОНИТОР")
+
+# Сетка для карточек
+monitor_grid = tk.Frame(monitor_frame, bg=COLORS['bg_dark'])
+monitor_grid.pack(fill="both", expand=True, padx=10, pady=10)
+
+def create_pixel_card(parent, title, row, column, colspan=1, color=COLORS['text_primary']):
+    """Создание карточки в пиксельном стиле"""
+    card = tk.Frame(parent, bg=COLORS['bg_card'], relief="sunken", bd=1)
+    card.grid(row=row, column=column, columnspan=colspan, sticky="nsew", padx=5, pady=5)
+    
+    # Заголовок карточки
+    title_frame = tk.Frame(card, bg=COLORS['bg_hover'])
+    title_frame.pack(fill="x", padx=1, pady=1)
+    
+    tk.Label(title_frame, text=f"▌ {title}", bg=COLORS['bg_hover'], fg=color,
+             font=PIXEL_FONT_BOLD, anchor="w").pack(side="left", padx=5)
+    
+    # Контент
+    content_frame = tk.Frame(card, bg=COLORS['bg_card'])
+    content_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    return content_frame
+
+# Настройка grid
+for i in range(3):
+    monitor_grid.columnconfigure(i, weight=1)
+for i in range(3):
+    monitor_grid.rowconfigure(i, weight=1)
+
+# Карточка: Система
+sys_card = create_pixel_card(monitor_grid, "⚙️ СИСТЕМА", 0, 0, color=COLORS['text_primary'])
+sys_labels = {}
+
+# Карточка: Процессор
+cpu_card = create_pixel_card(monitor_grid, "⚡ ЦП", 0, 1, color=COLORS['cpu_color'])
+cpu_labels = {}
+
+# Карточка: Память
+ram_card = create_pixel_card(monitor_grid, "🧠 ОЗУ", 0, 2, color=COLORS['ram_color'])
+ram_labels = {}
+
+# Карточка: Диски
+disk_card = create_pixel_card(monitor_grid, "💾 ДИСКИ", 1, 0, color=COLORS['disk_color'])
+
+# Карточка: Видеокарты
+gpu_card = create_pixel_card(monitor_grid, "🎮 ВИДЕОКАРТЫ", 1, 1, color=COLORS['gpu_color'])
+
+# Карточка: Сеть
+net_card = create_pixel_card(monitor_grid, "🌐 СЕТЬ", 1, 2, color=COLORS['net_color'])
+
+# Карточка: Батарея
+battery_card = create_pixel_card(monitor_grid, "🔋 БАТАРЕЯ", 2, 0, color=COLORS['battery_full'])
+
+# Карточка: Температуры
+temp_card = create_pixel_card(monitor_grid, "🌡️ ТЕМПЕРАТУРЫ", 2, 1, color=COLORS['temp_hot'])
+
+# Карточка: FPS/Пинг
+fps_card = create_pixel_card(monitor_grid, "📹 FPS/ПИНГ", 2, 2, color=COLORS['fps_good'])
+
+# === ВКЛАДКА 2: ГРАФИКИ ===
+graphs_frame = tk.Frame(notebook, bg=COLORS['bg_dark'])
+notebook.add(graphs_frame, text="📈 ГРАФИКИ")
+
+# Контейнер для графиков
+graphs_container = tk.Frame(graphs_frame, bg=COLORS['bg_dark'])
+graphs_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Графики в пиксельном стиле
+graph_titles = [
+    ("⚡ CPU ЗАГРУЗКА", COLORS['cpu_color']),
+    ("🧠 RAM ИСПОЛЬЗОВАНИЕ", COLORS['ram_color']),
+    ("🎮 GPU ЗАГРУЗКА", COLORS['gpu_color']),
+    ("🌐 СЕТЕВАЯ АКТИВНОСТЬ", COLORS['net_color'])
+]
+
+graph_canvases = []
+for i, (title, color) in enumerate(graph_titles):
+    frame = tk.Frame(graphs_container, bg=COLORS['bg_card'], relief="sunken", bd=1)
+    frame.pack(fill="both", expand=True if i == len(graph_titles)-1 else False, pady=(0, 10))
+    
+    # Заголовок графика
+    title_label = tk.Label(frame, text=f"▌ {title}", bg=COLORS['bg_hover'], fg=color,
+                          font=PIXEL_FONT_BOLD, anchor="w")
+    title_label.pack(fill="x", padx=1, pady=1)
+    
+    # Холст для графика
+    canvas = tk.Canvas(frame, bg=COLORS['bg_card'], height=120, highlightthickness=0)
+    canvas.pack(fill="both", expand=True, padx=10, pady=10)
+    graph_canvases.append(canvas)
+
+# === ВКЛАДКА 3: ПРОЦЕССЫ ===
+processes_frame = tk.Frame(notebook, bg=COLORS['bg_dark'])
+notebook.add(processes_frame, text="🔍 ПРОЦЕССЫ")
+
+# Таблица процессов в пиксельном стиле
+process_tree_frame = tk.Frame(processes_frame, bg=COLORS['bg_dark'])
+process_tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+# Используем Text widget вместо Treeview для пиксельного стиля
+process_text = tk.Text(process_tree_frame, bg=COLORS['bg_card'], fg=COLORS['text_primary'],
+                      font=PIXEL_FONT_SMALL, wrap="none", insertbackground=COLORS['success'],
+                      height=25, relief="sunken", bd=1)
+process_text.pack(side="left", fill="both", expand=True)
+
+# Полоса прокрутки
+scrollbar = tk.Scrollbar(process_tree_frame, bg=COLORS['bg_card'], 
+                        troughcolor=COLORS['bg_dark'], command=process_text.yview)
+scrollbar.pack(side="right", fill="y")
+process_text.config(yscrollcommand=scrollbar.set)
+
+# === ВКЛАДКА 4: ЛОГИ ===
+logs_frame = tk.Frame(notebook, bg=COLORS['bg_dark'])
+notebook.add(logs_frame, text="📋 ЛОГИ")
+
+log_text = tk.Text(logs_frame, bg=COLORS['bg_card'], fg=COLORS['text_primary'],
+                   font=PIXEL_FONT_SMALL, wrap="word", insertbackground=COLORS['success'],
+                   relief="sunken", bd=1)
+log_text.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Настройка тегов для логов
+log_text.tag_config("log", foreground=COLORS['text_muted'])
+log_text.tag_config("info", foreground=COLORS['info'])
+log_text.tag_config("success", foreground=COLORS['success'])
+log_text.tag_config("warning", foreground=COLORS['warning'])
+log_text.tag_config("error", foreground=COLORS['danger'])
 
 # Перенаправление вывода
 sys.stdout = TextRedirect(log_text)
 sys.stderr = TextRedirect(log_text)
-safe_print("✅ Приложение запущено")
-safe_print(f"ОС: {platform.system()} | Python: {platform.python_version()}")
-safe_print(f"Используется psutil v{psutil.__version__}")
 
-# === Функции вывода ===
-def insert_line(text: str, tag: str = "good", target="info"):
-    try:
-        widget = {"info": info_text, "proc": proc_text, "net": net_text, "log": log_text}[target]
-        widget.insert("end", text + "\n", tag)
-    except KeyError:
-        safe_print(f"Ошибка insert_line: неверный target '{target}'")
-    except Exception as e:
-        safe_print(f"Ошибка insert_line: {str(e)}")
-
-def header(title: str, target="info"):
-    try:
-        sep = "─" * 60
-        insert_line(f"┌{sep}┐", "header", target)
-        insert_line(f"{title:^62}", "header", target)
-        insert_line(f"└{sep}┘", "header", target)
-        insert_line("", target)
-    except Exception as e:
-        safe_print(f"Ошибка header: {str(e)}")
-
-# === Кнопка "Сохранить отчёт" ===
-def save_report():
-    file_path = filedialog.asksaveasfilename(
-        defaultextension=".txt",
-        filetypes=[("Текст", "*.txt"), ("JSON", "*.json"), ("Все", "*.*")],
-        title="Сохранить отчёт"
-    )
-    
-    if not file_path:
-        safe_print("❌ Сохранение отменено пользователем")
-        return False
-    
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("📋 ОТЧЁТ О СИСТЕМЕ\n")
-            f.write(f"Дата: {datetime.datetime.now()}\n")
-            f.write(f"Система: {platform.system()} {platform.version()}\n\n")
-            
-            sections = {"Информация": info_text, "Процессы": proc_text, "Сеть": net_text}
-            for name, widget in sections.items():
-                f.write(f"=== {name} ===\n")
-                content = widget.get("1.0", "end-1c")
-                if content.strip():
-                    f.write(content + "\n\n")
-                else:
-                    f.write("(нет данных)\n\n")
-        
-        safe_print(f"✅ Отчёт сохранён: {file_path}")
-        return True
-    except PermissionError as e:
-        safe_print(f"❌ Ошибка доступа к файлу: {str(e)}")
-        return False
-    except OSError as e:
-        safe_print(f"❌ Ошибка файловой системы: {str(e)}")
-        return False
-    except Exception as e:
-        safe_print(f"❌ Ошибка сохранения: {str(e)}")
-        return False
-
-btn_save = tk.Button(root, text="💾 Отчёт", font=("Arial", 10), bg="#0088cc", fg="white", command=save_report)
-btn_save.pack(pady=4)
-
-# === Сбор данных с использованием psutil ===
-def collect_system_info():
-    try:
-        info_text.config(state="normal")
-        info_text.delete("1.0", "end")
-        safe_print("🔄 Сбор данных: Инфо...")
-        
-        header("🌐 ОПЕРАЦИОННАЯ СИСТЕМА")
-        insert_line(f"Система: {platform.system()}")
-        insert_line(f"Версия: {platform.version()}")
-        try:
-            insert_line(f"Архитектура: {platform.architecture()[0]}")
-        except Exception as e:
-            insert_line(f"Архитектура: ошибка ({str(e)})")
-        insert_line(f"Имя ПК: {platform.node()}")
-        
-        try:
-            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time()).strftime('%Y-%m-%d %H:%M:%S')
-            insert_line(f"Время загрузки: {boot_time}")
-        except Exception as e:
-            insert_line(f"Время загрузки: ошибка ({str(e)})")
-        
-        insert_line("")
-        
-        header("⚙️ ПРОЦЕССОР")
-        try:
-            cpu_brand = platform.processor() or 'Неизвестно'
-            insert_line(f"Модель: {cpu_brand}")
-        except Exception as e:
-            insert_line(f"Модель: ошибка ({str(e)})")
-        
-        try:
-            cores_physical = psutil.cpu_count(logical=False)
-            cores_logical = psutil.cpu_count(logical=True)
-            insert_line(f"Ядер: {cores_physical} | Потоков: {cores_logical}")
-        except Exception as e:
-            insert_line(f"Ядра/потоки: ошибка ({str(e)})")
-        
-        try:
-            cpu_freq = psutil.cpu_freq()
-            if cpu_freq:
-                insert_line(f"Текущая частота: {cpu_freq.current:.0f} МГц")
-                insert_line(f"Максимальная частота: {cpu_freq.max:.0f} МГц")
-        except Exception as e:
-            insert_line(f"Частота CPU: ошибка ({str(e)})")
-        
-        try:
-            cpu_usage = psutil.cpu_percent(interval=0.1)
-            insert_line(f"Загрузка CPU: {cpu_usage:.1f}%")
-        except Exception as e:
-            insert_line(f"Загрузка CPU: ошибка ({str(e)})")
-        
-        insert_line("")
-        
-        header("🧠 RAM")
-        try:
-            vm = psutil.virtual_memory()
-            insert_line(f"Объём RAM: {get_size(vm.total)}")
-            
-            ram_percent = vm.percent
-            tag = "good" if ram_percent < 70 else "warn" if ram_percent < 90 else "crit"
-            insert_line(f"Используется: {get_size(vm.used)} ({ram_percent:.1f}%)", tag)
-            insert_line(f"Доступно: {get_size(vm.available)}")
-        except Exception as e:
-            insert_line(f"Ошибка RAM: {str(e)}", "crit")
-        
-        try:
-            swap = psutil.swap_memory()
-            if swap.total > 0:
-                insert_line(f"Swap: {get_size(swap.total)} | Используется: {get_size(swap.used)} ({swap.percent:.1f}%)")
-        except Exception as e:
-            insert_line(f"Ошибка Swap: {str(e)}", "warn")
-        
-        if wmi_available and wmi_module:
-            try:
-                mems = wmi_module.Win32_PhysicalMemory()
-                insert_line(f"Модулей RAM: {len(mems)}")
-                for i, mem in enumerate(mems):
-                    try:
-                        cap = get_size(int(mem.Capacity))
-                        speed = f"{mem.ConfiguredClockSpeed} МГц" if hasattr(mem, 'ConfiguredClockSpeed') else "—"
-                        insert_line(f"  Модуль {i+1}: {cap} | {speed}")
-                    except Exception as e:
-                        insert_line(f"  ⚠️ Ошибка модуля {i+1}: {str(e)}", "warn")
-            except Exception as e:
-                insert_line(f"  ⚠️ Ошибка RAM через WMI: {str(e)}", "warn")
-        
-        insert_line("")
-        
-        header("💾 ДИСКИ")
-        try:
-            partitions = psutil.disk_partitions()
-            for partition in partitions:
-                try:
-                    usage = psutil.disk_usage(partition.mountpoint)
-                    insert_line(f"{partition.device} ({partition.fstype}) -> {partition.mountpoint}")
-                    insert_line(f"  Всего: {get_size(usage.total)} | Свободно: {get_size(usage.free)} ({usage.percent:.1f}% занято)")
-                except PermissionError:
-                    insert_line(f"  ⚠️ Нет доступа к {partition.mountpoint}", "warn")
-                except Exception as e:
-                    insert_line(f"  Ошибка чтения {partition.mountpoint}: {str(e)}", "warn")
-        except Exception as e:
-            insert_line(f"Ошибка чтения дисков: {str(e)}", "warn")
-        
-        insert_line("")
-        
-        # Материнская плата, BIOS, GPU — через WMI
-        if wmi_available and wmi_module:
-            try:
-                header("🔌 МАТЕРИНСКАЯ ПЛАТА")
-                baseboards = wmi_module.Win32_BaseBoard()
-                if baseboards:
-                    base = baseboards[0]
-                    insert_line(f"Производитель: {base.Manufacturer or 'Неизвестно'}")
-                    insert_line(f"Модель: {base.Product or 'Неизвестно'}")
-                    insert_line(f"Серийный номер: {base.SerialNumber or 'Неизвестно'}")
-            except Exception as e:
-                insert_line(f"Ошибка получения данных о материнской плате: {str(e)}", "warn")
-
-            try:
-                header("💾 BIOS")
-                bioses = wmi_module.Win32_BIOS()
-                if bioses:
-                    bios = bioses[0]
-                    insert_line(f"Производитель: {bios.Manufacturer or 'Неизвестно'}")
-                    insert_line(f"Версия: {bios.SMBIOSBIOSVersion or 'Неизвестно'}")
-                    insert_line(f"Дата: {bios.ReleaseDate or 'Неизвестно'}")
-            except Exception as e:
-                insert_line(f"Ошибка получения данных о BIOS: {str(e)}", "warn")
-
-            try:
-                header("🎮 ВИДЕОКАРТА")
-                gpus = wmi_module.Win32_VideoController()
-                for i, gpu in enumerate(gpus):
-                    insert_line(f"GPU {i+1}: {gpu.Name or 'Неизвестно'}")
-                    if hasattr(gpu, 'AdapterRAM') and gpu.AdapterRAM:
-                        try:
-                            ram_mb = int(gpu.AdapterRAM) / 1024 / 1024
-                            insert_line(f"  Память: {ram_mb:.0f} МБ")
-                        except Exception as e:
-                            insert_line(f"  Ошибка памяти GPU: {str(e)}")
-                    if hasattr(gpu, 'DriverVersion'):
-                        insert_line(f"  Драйвер: {gpu.DriverVersion}")
-            except Exception as e:
-                insert_line(f"Ошибка получения данных о GPU: {str(e)}", "warn")
-        else:
-            insert_line("🔧 WMI недоступен — нет данных о плате/GPU", "warn")
-        
-        safe_print("✅ Информация о системе собрана")
-    
-    except Exception as e:
-        safe_print(f"❌ Критическая ошибка в collect_system_info: {str(e)}")
-        insert_line(f"❌ Критическая ошибка: {str(e)}", "crit")
-    
-    finally:
-        try:
-            info_text.config(state="disabled")
-        except Exception:
-            pass
-
-def collect_processes():
-    try:
-        proc_text.config(state="normal")
-        proc_text.delete("1.0", "end")
-        safe_print("🔄 Сбор данных: Процессы...")
-        header("🧩 АКТИВНЫЕ ПРОЦЕССЫ", "proc")
-        insert_line("PID | Имя | CPU% | RAM (MB) | Пользователь", "header", "proc")
-        processes = []
-        
-        try:
-            for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'username']):
-                try:
-                    processes.append({
-                        'pid': p.info['pid'],
-                        'name': p.info['name'][:20],
-                        'cpu': p.info['cpu_percent'] or 0,
-                        'ram': p.info['memory_info'].rss / 1024 / 1024 if p.info['memory_info'] else 0,
-                        'user': p.info['username'][:12] if p.info['username'] else 'SYSTEM'
-                    })
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-                except Exception as e:
-                    safe_print(f"Ошибка процесса {p.info.get('pid', 'N/A')}: {str(e)}")
-            
-            # Обновляем CPU процент для всех процессов
-            try:
-                psutil.cpu_percent(interval=0.1)  # Первый вызов игнорируется
-                time.sleep(0.1)
-                
-                for p in processes:
-                    try:
-                        proc = psutil.Process(p['pid'])
-                        p['cpu'] = proc.cpu_percent(interval=0)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-                    except Exception as e:
-                        safe_print(f"Ошибка обновления CPU для PID {p['pid']}: {str(e)}")
-            except Exception as e:
-                safe_print(f"Ошибка обновления CPU процентов: {str(e)}")
-            
-            processes.sort(key=lambda x: x['cpu'], reverse=True)
-            
-            for proc in processes[:30]:
-                color = "high" if proc['cpu'] > 50 else "med" if proc['cpu'] > 10 else "low"
-                insert_line(f"{proc['pid']:6} | {proc['name']:<20} | {proc['cpu']:5.1f} | {proc['ram']:7.1f} | {proc['user']:<12}", color, "proc")
-            
-            # Статистика
-            insert_line("", "proc")
-            insert_line(f"Всего процессов: {len(processes)}", "header", "proc")
-            
-        except Exception as e:
-            insert_line(f"Ошибка сбора процессов: {str(e)}", "crit", "proc")
-        
-        safe_print("✅ Процессы собраны")
-    
-    except Exception as e:
-        safe_print(f"❌ Критическая ошибка в collect_processes: {str(e)}")
-    
-    finally:
-        try:
-            proc_text.config(state="disabled")
-        except Exception:
-            pass
-
-def collect_network_connections():
-    try:
-        net_text.config(state="normal")
-        net_text.delete("1.0", "end")
-        safe_print("🔄 Сбор данных: Сеть...")
-        header("🌐 СЕТЕВЫЕ ПОДКЛЮЧЕНИЯ", "net")
-        
-        try:
-            # Сетевые интерфейсы
-            header("📡 СЕТЕВЫЕ ИНТЕРФЕЙСЫ", "net")
-            interfaces = psutil.net_if_addrs()
-            stats = psutil.net_if_stats()
-            
-            for iface, addrs in interfaces.items():
-                try:
-                    insert_line(f"📶 {iface}:", "header", "net")
-                    if iface in stats:
-                        stat = stats[iface]
-                        status_text = '✅ ВКЛ' if stat.isup else '❌ ВЫКЛ'
-                        tag = "good" if stat.isup else "warn"
-                        insert_line(f"  Статус: {status_text} | MTU: {stat.mtu}", tag, "net")
-                    
-                    for addr in addrs:
-                        try:
-                            if addr.family == psutil.AF_INET:
-                                insert_line(f"  IPv4: {addr.address}/{addr.netmask}", "good", "net")
-                            elif addr.family == psutil.AF_INET6:
-                                insert_line(f"  IPv6: {addr.address}", "good", "net")
-                            elif addr.family == psutil.AF_LINK:
-                                insert_line(f"  MAC: {addr.address}", "good", "net")
-                        except Exception as e:
-                            insert_line(f"  Ошибка адреса: {str(e)}", "warn", "net")
-                except Exception as e:
-                    insert_line(f"Ошибка интерфейса {iface}: {str(e)}", "warn", "net")
-            
-            insert_line("", "net")
-            
-            # Активные подключения
-            header("🔗 АКТИВНЫЕ ПОДКЛЮЧЕНИЯ", "net")
-            insert_line("Протокол | Локальный адрес | Удалённый адрес | Статус | PID", "header", "net")
-            
-            connections = []
-            try:
-                connections = psutil.net_connections(kind='inet')
-            except psutil.AccessDenied as e:
-                insert_line(f"⚠️ Требуются права администратора: {str(e)}", "warn", "net")
-            except Exception as e:
-                insert_line(f"⚠️ Ошибка получения подключений: {str(e)}", "warn", "net")
-            
-            for conn in connections[:40]:
-                try:
-                    laddr = f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else "0.0.0.0:0"
-                    raddr = f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else "-"
-                    
-                    status_map = {
-                        'ESTABLISHED': '✅',
-                        'LISTEN': '👂',
-                        'TIME_WAIT': '⏳',
-                        'CLOSE_WAIT': '⌛'
-                    }
-                    status_icon = status_map.get(conn.status, '❓')
-                    
-                    proto = "TCP" if conn.type == 1 else "UDP"
-                    
-                    proc_name = "Система"
-                    if conn.pid:
-                        try:
-                            proc = psutil.Process(conn.pid)
-                            proc_name = proc.name()[:15]
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            proc_name = f"[{conn.pid}]"
-                        except Exception:
-                            proc_name = f"PID:{conn.pid}"
-                    
-                    color = "good" if conn.status == 'ESTABLISHED' else "warn" if conn.status == 'LISTEN' else "low"
-                    insert_line(f"{proto:6} | {laddr:<20} | {raddr:<20} | {status_icon} {conn.status:<10} | {proc_name}", color, "net")
-                except Exception as e:
-                    safe_print(f"Ошибка обработки подключения: {str(e)}")
-                    continue
-            
-            # Сетевая статистика
-            insert_line("", "net")
-            header("📊 СЕТЕВАЯ СТАТИСТИКА", "net")
-            
-            try:
-                net_io = psutil.net_io_counters()
-                insert_line(f"Отправлено: {get_size(net_io.bytes_sent)}", "good", "net")
-                insert_line(f"Получено: {get_size(net_io.bytes_recv)}", "good", "net")
-                insert_line(f"Пакеты отправлено: {net_io.packets_sent}", "good", "net")
-                insert_line(f"Пакеты получено: {net_io.packets_recv}", "good", "net")
-                insert_line(f"Ошибки отправки: {net_io.errout}", "warn" if net_io.errout > 0 else "good", "net")
-                insert_line(f"Ошибки получения: {net_io.errin}", "warn" if net_io.errin > 0 else "good", "net")
-            except Exception as e:
-                insert_line(f"Ошибка сетевой статистики: {str(e)}", "warn", "net")
-            
-        except Exception as e:
-            insert_line(f"Критическая ошибка сети: {str(e)}", "crit", "net")
-        
-        safe_print("✅ Сетевые данные собраны")
-    
-    except Exception as e:
-        safe_print(f"❌ Критическая ошибка в collect_network_connections: {str(e)}")
-    
-    finally:
-        try:
-            net_text.config(state="disabled")
-        except Exception:
-            pass
-
-# === Графики ===
+# === ДАННЫЕ ДЛЯ ГРАФИКОВ ===
 MAX_POINTS = 150
-net_down = deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
-net_up = deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
-cpu_usage = deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
-ram_usage = deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
-net_old = psutil.net_io_counters()
+cpu_data = deque([0] * MAX_POINTS, maxlen=MAX_POINTS)
+ram_data = deque([0] * MAX_POINTS, maxlen=MAX_POINTS)
+gpu_data = deque([0] * MAX_POINTS, maxlen=MAX_POINTS)
+net_down_data = deque([0] * MAX_POINTS, maxlen=MAX_POINTS)
+net_up_data = deque([0] * MAX_POINTS, maxlen=MAX_POINTS)
+net_last = psutil.net_io_counters()
 
-def update_graphs():
-    global net_old
+# === ФУНКЦИИ ОБНОВЛЕНИЯ ===
+def update_system_info():
+    """Обновление системной информации"""
     try:
-        new_net = psutil.net_io_counters()
-        down = (new_net.bytes_recv - net_old.bytes_recv) / 1024
-        up = (new_net.bytes_sent - net_old.bytes_sent) / 1024
-        net_down.append(max(0, min(down, 8000)))
-        net_up.append(max(0, min(up, 8000)))
-        net_old = new_net
+        # Системная информация
+        sys_info = {
+            "ОС": f"{platform.system()} {platform.release()}",
+            "Версия": platform.version(),
+            "Архитектура": platform.architecture()[0],
+            "Имя ПК": platform.node(),
+            "Время загрузки": datetime.datetime.fromtimestamp(psutil.boot_time()).strftime('%Y-%m-%d %H:%M:%S'),
+            "Время работы": str(datetime.timedelta(seconds=int(time.time() - psutil.boot_time()))),
+            "Python": platform.python_version()
+        }
         
-        cpu_usage.append(psutil.cpu_percent(interval=None))
-        ram_usage.append(psutil.virtual_memory().percent)
-
-        canvas.delete("all")
-        w = max(canvas.winfo_width(), 400)
-        h = 240
-
-        def draw(data, y, col, label):
-            try:
-                points = []
-                for i, val in enumerate(data):
-                    x = i * (w / MAX_POINTS)
-                    point_y = y - (val / 100) * (h - 40)
-                    points.extend([x, point_y])
-                if len(points) > 2:
-                    canvas.create_line(points, fill=col, width=2, smooth=True)
-                canvas.create_text(70, y - 15, text=label, fill=col, font=info_font)
-            except Exception as e:
-                safe_print(f"Ошибка draw графиков: {str(e)}")
-
-        draw(net_down, 50, "#00ccff", "⬇ КБ/с")
-        draw(net_up, 100, "#00ffaa", "⬆ КБ/с")
-        draw(cpu_usage, 150, "#ff5555", "📊 CPU %")
-        draw(ram_usage, 200, "#ffaa33", "🧠 RAM %")
+        # Процессор
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_info = {
+            "Модель": platform.processor() or "Неизвестно",
+            "Ядра/Потоки": f"{psutil.cpu_count(logical=False)}/{psutil.cpu_count(logical=True)}",
+            "Загрузка": f"{cpu_percent:.1f}%",
+            "Частота": f"{psutil.cpu_freq().current:.0f} МГц" if psutil.cpu_freq() else "N/A"
+        }
         
-        # Добавляем легенду
-        canvas.create_text(w - 80, 20, text="Реальное время", fill="#ffffff", font=("Consolas", 9))
+        # Память
+        vm = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        ram_info = {
+            "Всего": get_size(vm.total),
+            "Использовано": f"{get_size(vm.used)} ({vm.percent:.1f}%)",
+            "Доступно": get_size(vm.available),
+            "SWAP": f"{get_size(swap.used)}/{get_size(swap.total)}" if swap.total > 0 else "Отключен"
+        }
         
-    except Exception as e:
-        safe_print(f"❌ Ошибка обновления графиков: {str(e)}")
-
-    root.after(1000, update_graphs)
-
-graph_frame = tk.Frame(notebook, bg="#0a0a0a")
-notebook.add(graph_frame, text="📈 Мониторинг")
-tk.Label(graph_frame, text="РЕАЛЬНОЕ ВРЕМЯ: CPU | RAM | СЕТЬ", font=title_font, fg="#ff9900", bg="#0a0a0a").pack(pady=8)
-canvas = tk.Canvas(graph_frame, bg="#111", height=240, highlightthickness=0)
-canvas.pack(fill="both", expand=True, padx=15, pady=8)
-
-# ========================================
-# 🎮 ОВЕРЛЕЙ (HUD)
-# ========================================
-config_file = "overlay_config.json"
-default_config = {"x": 50, "y": 50, "width": 240, "height": 110}
-
-try:
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            overlay_config = json.load(f)
-    else:
-        overlay_config = default_config
-except Exception as e:
-    safe_print(f"⚠️ Ошибка загрузки конфига оверлея: {str(e)}")
-    overlay_config = default_config
-
-overlay = tk.Toplevel(root)
-overlay.title("🎮 HUD")
-overlay.geometry(f"{overlay_config['width']}x{overlay_config['height']}+{overlay_config['x']}+{overlay_config['y']}")
-overlay.overrideredirect(True)
-overlay.attributes("-topmost", True)
-overlay.attributes("-alpha", 0.93)
-overlay.configure(bg="black")
-
-overlay.protocol("WM_DELETE_WINDOW", lambda: None)
-
-overlay_label = tk.Label(
-    overlay,
-    text="Загрузка...",
-    font=("Consolas", 9),
-    fg="#00ff88",
-    bg="black",
-    justify="left",
-    anchor="nw",
-    padx=10,
-    pady=8
-)
-overlay_label.pack(fill="both", expand=True)
-
-minimize_btn = tk.Label(overlay, text="◀", font=("Arial", 10, "bold"), fg="gray", bg="black", cursor="hand2")
-minimize_btn.place(relx=1.0, rely=1.0, anchor="se", x=-5, y=-5)
-
-is_overlay_minimized = False
-current_full_text = ""
-current_minimized_text = ""
-
-def toggle_minimize():
-    try:
-        global is_overlay_minimized
-        if is_overlay_minimized:
-            overlay_label.config(text=current_full_text)
-            minimize_btn.config(text="◀")
-            overlay.geometry(f"{overlay_config['width']}x{overlay_config['height']}")
+        # Диски
+        disk_info = ""
+        try:
+            for part in psutil.disk_partitions():
+                if part.fstype and 'cdrom' not in part.opts:
+                    try:
+                        usage = psutil.disk_usage(part.mountpoint)
+                        usage_percent = usage.percent
+                        disk_info += f"{part.device}: {get_size(usage.used)}/{get_size(usage.total)} ({usage_percent:.1f}%)\n"
+                    except:
+                        disk_info += f"{part.device}: недоступно\n"
+        except Exception as e:
+            disk_info = f"Ошибка: {str(e)}"
+        
+        # Сеть
+        net_io = psutil.net_io_counters()
+        net_info = {
+            "Отправлено": get_size(net_io.bytes_sent),
+            "Получено": get_size(net_io.bytes_recv),
+            "Пакеты": f"{net_io.packets_sent}/{net_io.packets_recv}",
+            "Соединения": len(psutil.net_connections())
+        }
+        
+        # ВИДЕОКАРТЫ
+        gpus = get_gpu_info()
+        gpu_text = ""
+        
+        if gpus:
+            for gpu in gpus:
+                active_indicator = " ⭐ АКТИВНА" if gpu.get('active', False) else ""
+                gpu_name = gpu.get('name', 'Unknown GPU')
+                gpu_load = gpu.get('load', 0)
+                gpu_temp = gpu.get('temperature', 0)
+                gpu_mem_used = gpu.get('memory_used', 0)
+                gpu_mem_total = gpu.get('memory_total', 0)
+                
+                gpu_text += f"{gpu_name[:25]}{active_indicator}\n"
+                gpu_text += f"  Загрузка: {gpu_load:.1f}%\n"
+                if gpu_temp > 0:
+                    gpu_text += f"  Температура: {gpu_temp:.1f}°C\n"
+                if gpu_mem_total > 0:
+                    gpu_text += f"  Память: {gpu_mem_used:.0f}/{gpu_mem_total:.0f} MB\n"
+                gpu_text += "\n"
         else:
-            overlay_label.config(text=current_minimized_text)
-            minimize_btn.config(text="▶")
-            overlay.geometry("240x20")
+            gpu_text = "Видеокарты не обнаружены"
         
-        is_overlay_minimized = not is_overlay_minimized
-    except Exception as e:
-        safe_print(f"Ошибка toggle_minimize: {str(e)}")
-
-def save_pos(event=None):
-    try:
-        pos = overlay.winfo_geometry().split('+')
-        overlay_config.update({
-            "x": int(pos[1]),
-            "y": int(pos[2]),
-            "width": overlay.winfo_width(),
-            "height": overlay.winfo_height()
-        })
-        with open(config_file, "w") as f:
-            json.dump(overlay_config, f)
-    except Exception as e:
-        safe_print(f"⚠️ Ошибка сохранения позиции оверлея: {str(e)}")
-
-overlay_label.bind("<Button-1>", lambda e: [setattr(overlay, '_x', e.x), setattr(overlay, '_y', e.y)])
-overlay_label.bind("<B1-Motion>", lambda e: overlay.geometry(f'+{e.x_root - overlay._x}+{e.y_root - overlay._y}'))
-minimize_btn.bind("<Button-1>", lambda e: toggle_minimize())
-overlay.bind("<ButtonRelease-1>", save_pos)
-
-def toggle_overlay(event=None):
-    try:
-        if overlay.state() == "withdrawn":
-            overlay.deiconify()
+        # Батарея
+        battery = get_battery_info()
+        battery_text = ""
+        if battery:
+            battery_text += f"Заряд: {battery['percent']}%\n"
+            battery_text += f"Статус: {battery['status']}\n"
+            if battery['time_left'] and battery['time_left'] > 0:
+                if battery['time_left'] != 4294967295:  # Не POWER_TIME_UNLIMITED
+                    hours = battery['time_left'] // 3600
+                    minutes = (battery['time_left'] % 3600) // 60
+                    battery_text += f"Осталось: {hours}ч {minutes}м\n"
         else:
-            overlay.withdraw()
-    except Exception as e:
-        safe_print(f"Ошибка toggle_overlay: {str(e)}")
-
-root.bind("<F8>", toggle_overlay)
-overlay.bind("<F8>", toggle_overlay)
-
-def update_overlay():
-    global current_full_text, current_minimized_text
-
-    try:
-        if not hasattr(update_overlay, 'last_time'):
-            update_overlay.last_time = time.time()
-            update_overlay.frame_count = 0
-            fps = 0
-        else:
-            update_overlay.frame_count += 1
-            now = time.time()
-            if now - update_overlay.last_time >= 1.0:
-                fps = update_overlay.frame_count
-                update_overlay.frame_count = 0
-                update_overlay.last_time = now
-            else:
-                fps = int(1 / (now - update_overlay.last_time)) if (now - update_overlay.last_time) > 0 else 0
-
-        cpu = psutil.cpu_percent(interval=None)
-        ram = psutil.virtual_memory()
-        ram_p = ram.percent
-
-        temp = None
+            battery_text = "Батарея не обнаружена"
+        
+        # Температуры
+        temp_text = ""
         try:
             temps = psutil.sensors_temperatures()
             if temps:
-                for key in ['coretemp', 'cpu_thermal', 'acpitz', 'k10temp']:
-                    if key in temps and temps[key]:
-                        temp = max(t.current for t in temps[key] if hasattr(t, 'current'))
-                        break
+                for name, entries in temps.items():
+                    if entries:
+                        for entry in entries:
+                            if hasattr(entry, 'current') and entry.current:
+                                temp_text += f"{name} {entry.label or ''}: {entry.current:.1f}°C\n"
+            else:
+                temp_text = "Датчики температуры не найдены\n"
+                temp_text += "Для Windows используйте OpenHardwareMonitor"
         except AttributeError:
-            # psutil.sensors_temperatures() может быть недоступен на некоторых системах
-            temp = None
+            temp_text = "Датчики температуры не доступны\n"
+            temp_text += "В Windows используйте OpenHardwareMonitor"
         except Exception as e:
-            safe_print(f"Ошибка температуры: {str(e)}")
-            temp = None
-
-        color = "#ff3333" if temp and temp > 80 else \
-                "#ffaa00" if temp and temp > 65 else "#00ff88"
-        temp_str = f"{temp:.0f}°C" if temp else "N/A"
-
-        battery = None
-        try:
-            battery = psutil.sensors_battery()
-        except Exception as e:
-            safe_print(f"Ошибка батареи: {str(e)}")
-            battery = None
+            temp_text = f"Ошибка: {str(e)}"
         
-        battery_str = f"🔋{battery.percent}%" if battery and hasattr(battery, 'percent') else ""
-
-        disk_usage = None
-        try:
-            disk = psutil.disk_usage('/' if platform.system() != 'Windows' else 'C:\\')
-            disk_usage = disk.percent
-        except Exception:
-            disk_usage = None
-
-        current_minimized_text = f"FPS:{fps:3d} | CPU:{cpu:4.1f}% | RAM:{ram_p:4.1f}%"
+        # FPS и Пинг
+        fps_ping_text = ""
         
-        full_text_lines = [
-            f"FPS: {fps:3d} | CPU: {cpu:4.1f}%",
-            f"RAM: {ram_p:4.1f}% | {ram.used//1024//1024:4d}/{ram.total//1024//1024:4d} MB",
-            f"Temp: {temp_str:8} | {battery_str}"
-        ]
+        fps_data = get_fps()
+        if fps_data:
+            fps_ping_text += f"FPS: {fps_data['value']} ({fps_data['status']})\n"
+        else:
+            fps_ping_text += "FPS: не доступен\n"
         
-        if disk_usage:
-            full_text_lines.append(f"Disk: {disk_usage:4.1f}% занято")
+        ping_data = get_ping()
+        if ping_data:
+            fps_ping_text += f"Пинг: {ping_data['value']}мс ({ping_data['status']})\n"
+        else:
+            fps_ping_text += "Пинг: не доступен\n"
         
-        current_full_text = "\n".join(full_text_lines)
-
-        overlay_label.config(text=current_minimized_text if is_overlay_minimized else current_full_text, fg=color)
-    
+        # Обновление интерфейса
+        update_pixel_card(sys_card, sys_info, sys_labels, COLORS['text_primary'])
+        update_pixel_card(cpu_card, cpu_info, cpu_labels, COLORS['cpu_color'])
+        update_pixel_card(ram_card, ram_info, ram_labels, COLORS['ram_color'])
+        update_card_text(disk_card, disk_info, COLORS['disk_color'])
+        update_card_text(gpu_card, gpu_text, COLORS['gpu_color'])
+        update_card_text(net_card, format_dict_to_text(net_info), COLORS['net_color'])
+        update_card_text(battery_card, battery_text, COLORS['battery_full'])
+        update_card_text(temp_card, temp_text, COLORS['temp_hot'])
+        update_card_text(fps_card, fps_ping_text, COLORS['fps_good'])
+        
     except Exception as e:
-        safe_print(f"Ошибка update_overlay: {str(e)}")
-    
-    finally:
-        try:
-            overlay.after(500, update_overlay)
-        except Exception as e:
-            safe_print(f"Ошибка планирования update_overlay: {str(e)}")
+        safe_print(f"❌ Ошибка обновления системной информации: {str(e)}")
 
-# === Кнопка обновления данных ===
-def refresh_all():
+def update_pixel_card(card, data_dict, labels_dict, color):
+    """Обновление содержимого карточки в пиксельном стиле"""
+    # Очистка предыдущих данных
+    for widget in card.winfo_children():
+        widget.destroy()
+    
+    # Добавление новых данных
+    for key, value in data_dict.items():
+        frame = tk.Frame(card, bg=COLORS['bg_card'])
+        frame.pack(fill="x", pady=1)
+        
+        key_label = tk.Label(frame, text=f"{key}:", bg=COLORS['bg_card'], 
+                           fg=COLORS['text_secondary'], font=PIXEL_FONT_SMALL, anchor="w", width=15)
+        key_label.pack(side="left")
+        
+        value_label = tk.Label(frame, text=str(value), bg=COLORS['bg_card'], 
+                             fg=color, font=PIXEL_FONT_SMALL, anchor="w")
+        value_label.pack(side="left")
+        
+        labels_dict[key] = (key_label, value_label)
+
+def update_card_text(card, text, color):
+    """Обновление текста в карточке"""
+    # Очистка предыдущих данных
+    for widget in card.winfo_children():
+        widget.destroy()
+    
+    # Добавление нового текста
+    for line in text.strip().split('\n'):
+        if line.strip():  # Пропускаем пустые строки
+            label = tk.Label(card, text=line, bg=COLORS['bg_card'], 
+                           fg=color, font=PIXEL_FONT_SMALL, anchor="w", justify="left")
+            label.pack(anchor="w", pady=0)
+
+def format_dict_to_text(data_dict):
+    """Форматирование словаря в текст"""
+    text = ""
+    for key, value in data_dict.items():
+        text += f"{key}: {value}\n"
+    return text
+
+def update_processes():
+    """Обновление списка процессов"""
     try:
-        safe_print("🔄 Обновление всех данных...")
-        collect_system_info()
-        collect_processes()
-        collect_network_connections()
-        safe_print("✅ Все данные обновлены")
+        process_text.config(state="normal")
+        process_text.delete("1.0", "end")
+        
+        # Заголовок таблицы
+        header = "PID       ПРОЦЕСС                      ПОЛЬЗОВАТЕЛЬ     CPU%     RAM(MB)     СОСТОЯНИЕ\n"
+        process_text.insert("end", header, "header")
+        process_text.insert("end", "─" * 80 + "\n")
+        
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'status']):
+            try:
+                info = proc.info
+                processes.append({
+                    'pid': info['pid'],
+                    'name': info['name'][:25] if info['name'] else 'N/A',
+                    'user': info['username'][:12] if info['username'] else 'SYSTEM',
+                    'cpu': info['cpu_percent'] or 0.0,
+                    'ram': proc.memory_info().rss / 1024 / 1024 if hasattr(proc, 'memory_info') else 0,
+                    'status': info['status'] or 'unknown'
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        # Сортировка по CPU
+        processes.sort(key=lambda x: x['cpu'], reverse=True)
+        
+        # Добавление в текстовое поле
+        for proc in processes[:40]:
+            cpu_percent = proc['cpu']
+            if cpu_percent > 70:
+                cpu_color = COLORS['danger']
+            elif cpu_percent > 30:
+                cpu_color = COLORS['warning']
+            else:
+                cpu_color = COLORS['success']
+            
+            ram_mb = proc['ram']
+            if ram_mb > 500:
+                ram_color = COLORS['danger']
+            elif ram_mb > 100:
+                ram_color = COLORS['warning']
+            else:
+                ram_color = COLORS['success']
+            
+            line = f"{proc['pid']:<8} {proc['name']:<28} {proc['user']:<16} "
+            
+            process_text.insert("end", line)
+            process_text.insert("end", f"{cpu_percent:>6.1f}", "cpu_color")
+            process_text.insert("end", "     ")
+            process_text.insert("end", f"{ram_mb:>8.1f}", "ram_color")
+            process_text.insert("end", f"     {proc['status']}\n")
+            
+            # Создаем теги с разными цветами для каждой строки
+            process_text.tag_config("cpu_color", foreground=cpu_color)
+            process_text.tag_config("ram_color", foreground=ram_color)
+        
+        process_text.tag_config("header", foreground=COLORS['text_primary'], font=PIXEL_FONT_BOLD)
+        process_text.config(state="disabled")
+        
     except Exception as e:
-        safe_print(f"❌ Ошибка при обновлении данных: {str(e)}")
+        safe_print(f"❌ Ошибка обновления процессов: {str(e)}")
 
-btn_refresh = tk.Button(root, text="🔄 Обновить", font=("Arial", 10), bg="#22aa22", fg="white", command=refresh_all)
-btn_refresh.pack(pady=4)
+def update_graphs():
+    """Обновление графиков в пиксельном стиле"""
+    try:
+        global net_last
+        
+        # Получение данных
+        cpu_percent = psutil.cpu_percent(interval=None)
+        ram_percent = psutil.virtual_memory().percent
+        
+        # GPU данные
+        gpu_percent = 0
+        gpus = get_gpu_info()
+        if gpus:
+            gpu_percent = sum(gpu.get('load', 0) for gpu in gpus) / max(len(gpus), 1)
+        
+        # Сетевые данные
+        net_current = psutil.net_io_counters()
+        down_speed = (net_current.bytes_recv - net_last.bytes_recv) / 1024
+        up_speed = (net_current.bytes_sent - net_last.bytes_sent) / 1024
+        net_last = net_current
+        
+        # Добавление данных
+        cpu_data.append(cpu_percent)
+        ram_data.append(ram_percent)
+        gpu_data.append(gpu_percent)
+        net_down_data.append(min(down_speed, 10000))
+        net_up_data.append(min(up_speed, 10000))
+        
+        # Отрисовка графиков
+        all_graphs = [cpu_data, ram_data, gpu_data]
+        colors = [COLORS['cpu_color'], COLORS['ram_color'], COLORS['gpu_color']]
+        titles = ["CPU", "RAM", "GPU"]
+        
+        for i in range(3):
+            draw_pixel_graph(graph_canvases[i], all_graphs[i], colors[i], titles[i], "%")
+        
+        # График сети
+        draw_network_graph(graph_canvases[3], net_down_data, net_up_data)
+        
+    except Exception as e:
+        safe_print(f"❌ Ошибка обновления графиков: {str(e)}")
+    
+    root.after(1000, update_graphs)
 
-# === Запуск ===
-safe_print("🚀 Запуск сбора данных...")
+def draw_pixel_graph(canvas, data, color, title, unit):
+    """Отрисовка графика в пиксельном стиле"""
+    canvas.delete("all")
+    
+    w = canvas.winfo_width()
+    h = canvas.winfo_height()
+    
+    if w < 10 or h < 10:
+        return
+    
+    # Фон
+    canvas.create_rectangle(0, 0, w, h, fill=COLORS['bg_card'], outline="")
+    
+    # Сетка
+    for i in range(0, 101, 25):
+        y = h - 20 - (i / 100) * (h - 40)
+        canvas.create_line(30, y, w - 10, y, fill=COLORS['border'], width=1)
+    
+    # График
+    if len(data) > 1:
+        points = []
+        for i, value in enumerate(data):
+            x = 30 + (i / len(data)) * (w - 40)
+            y = h - 20 - (value / 100) * (h - 40) if value <= 100 else h - 60
+            points.extend([x, y])
+        
+        if len(points) >= 4:
+            canvas.create_line(points, fill=color, width=3, smooth=False)
+    
+    # Текущее значение
+    last_value = data[-1] if data else 0
+    canvas.create_text(w - 10, 10, text=f"{last_value:.0f}{unit}", anchor="ne",
+                      fill=color, font=PIXEL_FONT_BOLD)
+    
+    # Заголовок
+    canvas.create_text(10, 10, text=title, anchor="nw",
+                      fill=COLORS['text_primary'], font=PIXEL_FONT)
+
+def draw_network_graph(canvas, down_data, up_data):
+    """Отрисовка сетевого графика"""
+    canvas.delete("all")
+    
+    w = canvas.winfo_width()
+    h = canvas.winfo_height()
+    
+    if w < 10 or h < 10:
+        return
+    
+    # Фон
+    canvas.create_rectangle(0, 0, w, h, fill=COLORS['bg_card'], outline="")
+    
+    # Максимальное значение
+    max_val = max(max(down_data or [0]), max(up_data or [0]), 1)
+    
+    # Графики
+    if len(down_data) > 1 and len(up_data) > 1:
+        points_down = []
+        for i, value in enumerate(down_data):
+            x = 30 + (i / len(down_data)) * (w - 40)
+            y = h - 20 - (value / max_val) * (h - 40) if max_val > 0 else h - 20
+            points_down.extend([x, y])
+        
+        if len(points_down) >= 4:
+            canvas.create_line(points_down, fill=COLORS['info'], width=2, smooth=False)
+        
+        points_up = []
+        for i, value in enumerate(up_data):
+            x = 30 + (i / len(up_data)) * (w - 40)
+            y = h - 20 - (value / max_val) * (h - 40) if max_val > 0 else h - 20
+            points_up.extend([x, y])
+        
+        if len(points_up) >= 4:
+            canvas.create_line(points_up, fill=COLORS['net_color'], width=2, smooth=False)
+    
+    # Легенда
+    last_down = down_data[-1] if down_data else 0
+    last_up = up_data[-1] if up_data else 0
+    canvas.create_text(w - 10, 10, text=f"⬇{last_down:.0f} ⬆{last_up:.0f}", anchor="ne",
+                      fill=COLORS['text_primary'], font=PIXEL_FONT_BOLD)
+    
+    # Заголовок
+    canvas.create_text(10, 10, text="СЕТЬ", anchor="nw",
+                      fill=COLORS['net_color'], font=PIXEL_FONT)
+
+def refresh_all():
+    """Полное обновление всех данных"""
+    safe_print("█▄ ЗАПУСК ПОЛНОГО ОБНОВЛЕНИЯ ДАННЫХ...")
+    
+    threading.Thread(target=update_system_info, daemon=True).start()
+    threading.Thread(target=update_processes, daemon=True).start()
+    
+    safe_print("✅ ОБНОВЛЕНИЕ ДАННЫХ ЗАПУЩЕНО")
+
+# === ЗАПУСК ПРИЛОЖЕНИЯ ===
+safe_print("╔══════════════════════════════════════════════════════╗")
+safe_print("║          SYSTEM TERMINAL v1.0 ЗАПУСКАЕТСЯ           ║")
+safe_print("╚══════════════════════════════════════════════════════╝")
+safe_print(f"ОС: {platform.system()} {platform.release()}")
+safe_print(f"Python: {platform.python_version()}")
+safe_print(f"Права администратора: {'✅ ЕСТЬ' if is_admin() else '❌ НЕТ'}")
+safe_print("=" * 60)
+
+# Первоначальная загрузка данных
 refresh_all()
 
-root.after(100, update_graphs)
-root.after(100, update_overlay)
+# Запуск графиков
+root.after(1000, update_graphs)
 
-safe_print("🟢 Приложение готово. F8 — показать/скрыть оверлей.")
-safe_print("🔄 Автоматическое обновление графиков каждую секунду")
+# Информация о горячих клавишах
+safe_print("█▄ ГОРЯЧИЕ КЛАВИШИ:")
+safe_print("  F5 - Обновить все данные")
+safe_print("  Ctrl+S - Сохранить отчет")
+safe_print("  Ctrl+Q - Выйти")
+
+# Привязка горячих клавиш
+root.bind("<F5>", lambda e: refresh_all())
+root.bind("<Control-s>", lambda e: save_report())
+root.bind("<Control-q>", lambda e: root.quit())
+
+# Запуск основного цикла
+safe_print("✅ ПРИЛОЖЕНИЕ ГОТОВО К РАБОТЕ!")
+
+# Скрываем консольное окно если оно есть
+try:
+    import ctypes
+    # Получаем handle консольного окна
+    kernel32 = ctypes.WinDLL('kernel32')
+    console_window = kernel32.GetConsoleWindow()
+    if console_window:
+        # Скрываем консольное окно
+        user32 = ctypes.WinDLL('user32')
+        user32.ShowWindow(console_window, 0)
+except:
+    pass
 
 try:
     root.mainloop()
 except KeyboardInterrupt:
-    safe_print("🛑 Приложение остановлено пользователем")
+    safe_print("🛑 ПРИЛОЖЕНИЕ ОСТАНОВЛЕНО ПОЛЬЗОВАТЕЛЕМ")
 except Exception as e:
-    safe_print(f"❌ Критическая ошибка в mainloop: {str(e)}")
+    safe_print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
